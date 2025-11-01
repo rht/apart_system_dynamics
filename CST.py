@@ -1,8 +1,10 @@
+from dataclasses import dataclass
+import math
+from typing import Callable
 
+import matplotlib.pyplot as plt
 import numpy as np
 from scipy.integrate import solve_ivp
-from dataclasses import dataclass
-from typing import Callable
 
 ###############################################################################
 # 1. Model configuration
@@ -240,35 +242,229 @@ def simulate(
     return sol
 
 
+def plot_results(t_eval, K_path):
+    plt.figure(figsize=(10, 6))
+    plt.plot(t_eval, K_path[US], label="US K")
+    plt.plot(t_eval, K_path[CN], label="CN K")
+    plt.plot(t_eval, K_path[EU], label="EU K")
+    plt.xlabel("Time")
+    plt.ylabel("Capability (K)")
+    plt.title("Capability Evolution")
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.savefig("plots/CST.png")
+    plt.close()
+
+
+def plot_actions(t_eval, aX_path, aS_path, aV_path):
+    """
+    Plot actions over time using step plots.
+    """
+    fig, axes = plt.subplots(3, 1, figsize=(12, 10))
+
+    # Plot aX (acceleration)
+    axes[0].step(t_eval, aX_path[US], label="US", where='post', linewidth=2)
+    axes[0].step(t_eval, aX_path[CN], label="CN", where='post', linewidth=2)
+    axes[0].step(t_eval, aX_path[EU], label="EU", where='post', linewidth=2)
+    axes[0].set_ylabel("Acceleration Effort (aX)")
+    axes[0].set_title("Action Evolution Over Time")
+    axes[0].legend()
+    axes[0].grid(True, alpha=0.3)
+    axes[0].set_ylim([-0.05, 1.05])
+
+    # Plot aS (safety)
+    axes[1].step(t_eval, aS_path[US], label="US", where='post', linewidth=2)
+    axes[1].step(t_eval, aS_path[CN], label="CN", where='post', linewidth=2)
+    axes[1].step(t_eval, aS_path[EU], label="EU", where='post', linewidth=2)
+    axes[1].set_ylabel("Safety Effort (aS)")
+    axes[1].legend()
+    axes[1].grid(True, alpha=0.3)
+    axes[1].set_ylim([-0.05, 1.05])
+
+    # Plot aV (verification)
+    axes[2].step(t_eval, aV_path[US], label="US", where='post', linewidth=2)
+    axes[2].step(t_eval, aV_path[CN], label="CN", where='post', linewidth=2)
+    axes[2].step(t_eval, aV_path[EU], label="EU", where='post', linewidth=2)
+    axes[2].set_xlabel("Time")
+    axes[2].set_ylabel("Verification Effort (aV)")
+    axes[2].legend()
+    axes[2].grid(True, alpha=0.3)
+    axes[2].set_ylim([-0.05, 1.05])
+
+    plt.tight_layout()
+    plt.savefig("plots/CST_actions.png", dpi=150)
+    plt.close()
+    print("Saved action plot to plots/CST_actions.png")
+
 ###############################################################################
-# 6. Nash / best response hooks (future extension)
+# 6. Nash / best response implementation
 ###############################################################################
-# Where you'll extend:
-#
-# - Right now, policy_fn ignores the state and doesn't optimize anything.
-#   Later you'll want each bloc i to solve:
-#
-#   maximize_i  U_i = K_i(t+dt) - lam * Debt_i(t+dt)
-#
-#   subject to control bounds (aX_i, aS_i, aV_i in [0,1]),
-#   holding other blocs' controls fixed.
-#
-# - That becomes a myopic best response. You can wrap a fixed-point search
-#   at each timestep to approximate Nash.
-#
-# Suggested roadmap:
-#
-# def best_response_policy_factory(params):
-#     def policy_fn(t, y):
-#         st = unpack_state(y)
-#         # 1. Guess other players' actions (from previous step or last iter)
-#         # 2. For each i, solve a tiny argmax over aX_i,aS_i,aV_i in [0,1]
-#         #    (grid search 0..1 or small optimizer)
-#         # 3. Return Controls(aX,aS,aV)
-#         return Controls(aX=..., aS=..., aV=...)
-#     return policy_fn
-#
-# You don't have to change rhs_ode for that; you just swap policy_fn.
+
+
+def compute_next_state_single_step(
+    state: State,
+    controls: Controls,
+    params: Params,
+    dt: float = 0.1,
+) -> State:
+    """
+    Compute the next state after a small timestep dt using Euler integration.
+    """
+    dK = np.zeros(N_PLAYERS)
+    dS = np.zeros(N_PLAYERS)
+
+    # Capability dynamics
+    for i in range(N_PLAYERS):
+        if state.K[i] < params.K_threshold:
+            dK[i] = params.alpha * controls.aX[i] / (1.0 + params.beta_dim * state.K[i])
+        else:
+            dK[i] = params.alpha * controls.aX[i] * state.K[i]
+
+    # Safety dynamics
+    S_sum = np.sum(state.S)
+    for i in range(N_PLAYERS):
+        avg_other_S = (S_sum - state.S[i]) / (N_PLAYERS - 1)
+        spillover = params.eta * state.T * avg_other_S
+        dS[i] = params.gamma * controls.aS[i] + spillover
+
+    # Trust dynamics
+    mean_aV = np.mean(controls.aV)
+    dT = params.beta * mean_aV - params.delta_T * state.T
+
+    # Euler step
+    K_next = state.K + dK * dt
+    S_next = state.S + dS * dt
+    T_next = state.T + dT * dt
+
+    return State(K=K_next, S=S_next, T=T_next)
+
+
+def compute_payoff(
+    bloc_i: int,
+    state: State,
+    params: Params,
+) -> float:
+    """
+    Compute payoff for bloc i: U_i = K_i - lam * Debt_i
+    where Debt_i = max(0, K_i - theta * S_i)
+    """
+    debt_i = max(0.0, state.K[bloc_i] - params.theta * state.S[bloc_i])
+    payoff = state.K[bloc_i] - params.lam * debt_i
+    return payoff
+
+
+def best_response_for_bloc(
+    bloc_i: int,
+    state: State,
+    other_controls: Controls,
+    params: Params,
+    dt: float = 0.1,
+    budget_constraint: bool = True,
+    action_grid: list = None,
+) -> tuple[float, float, float]:
+    """
+    Find best response actions for bloc i, given other blocs' actions.
+    Returns (aX_i, aS_i, aV_i) that maximize bloc i's payoff.
+    Uses discrete grid search for speed.
+    """
+    if action_grid is None:
+        # Coarse grid for speed: only 5 values per action
+        action_grid = [0.0, 0.25, 0.5, 0.75, 1.0]
+
+    best_payoff = -np.inf
+    best_actions = (0.5, 0.3, 0.2)
+
+    # Grid search over all combinations
+    for aX_i in action_grid:
+        for aS_i in action_grid:
+            for aV_i in action_grid:
+                # Check budget constraint
+                if budget_constraint and (not math.isclose(aX_i + aS_i + aV_i, 1.0)):
+                    continue
+
+                # Create full control vector
+                aX_full = other_controls.aX.copy()
+                aS_full = other_controls.aS.copy()
+                aV_full = other_controls.aV.copy()
+
+                aX_full[bloc_i] = aX_i
+                aS_full[bloc_i] = aS_i
+                aV_full[bloc_i] = aV_i
+
+                controls = Controls(aX=aX_full, aS=aS_full, aV=aV_full)
+
+                # Compute next state
+                next_state = compute_next_state_single_step(state, controls, params, dt)
+
+                # Compute payoff
+                payoff = compute_payoff(bloc_i, next_state, params)
+
+                if payoff > best_payoff:
+                    best_payoff = payoff
+                    best_actions = (aX_i, aS_i, aV_i)
+
+    return best_actions
+
+
+def best_response_policy_builder(
+    params: Params,
+    dt: float = 0.1,
+    max_iterations: int = 5,
+    budget_constraint: bool = True,
+) -> Callable[[float, np.ndarray], Controls]:
+    """
+    Returns a best-response policy function that computes Nash equilibrium
+    via iterated best responses.
+    """
+    # Cache for previous actions (warm start)
+    cache = {
+        'aX': np.array([0.5, 0.5, 0.5]),
+        'aS': np.array([0.3, 0.3, 0.3]),
+        'aV': np.array([0.2, 0.2, 0.2]),
+    }
+
+    def policy_fn(t: float, y: np.ndarray) -> Controls:
+        state = unpack_state(y)
+
+        # Initialize with cached actions
+        aX = cache['aX'].copy()
+        aS = cache['aS'].copy()
+        aV = cache['aV'].copy()
+
+        # Iterative best response
+        for iteration in range(max_iterations):
+            aX_new = aX.copy()
+            aS_new = aS.copy()
+            aV_new = aV.copy()
+
+            # Each bloc computes best response given others' current actions
+            for i in range(N_PLAYERS):
+                current_controls = Controls(aX=aX, aS=aS, aV=aV)
+                aX_i, aS_i, aV_i = best_response_for_bloc(
+                    i, state, current_controls, params, dt, budget_constraint
+                )
+                aX_new[i] = aX_i
+                aS_new[i] = aS_i
+                aV_new[i] = aV_i
+
+            # Check convergence
+            change = (np.max(np.abs(aX_new - aX)) +
+                     np.max(np.abs(aS_new - aS)) +
+                     np.max(np.abs(aV_new - aV)))
+
+            aX, aS, aV = aX_new, aS_new, aV_new
+
+            if change < 1e-4:
+                break
+
+        # Update cache
+        cache['aX'] = aX.copy()
+        cache['aS'] = aS.copy()
+        cache['aV'] = aV.copy()
+
+        return Controls(aX=aX, aS=aS, aV=aV)
+
+    return policy_fn
 
 
 ###############################################################################
@@ -285,7 +481,7 @@ if __name__ == "__main__":
         theta=0.8,       # how effective safety is at offsetting capability
         K_threshold=10.0,  # AGI threshold for recursive self-improvement
         beta_dim=0.3,    # diminishing returns strength (higher = more diminishing)
-        lam=0.0,         # for future payoff weighting, currently unused
+        lam=0.5,         # payoff weighting for safety debt (0=ignore, 1=full weight)
     )
 
     # --- Initial conditions:
@@ -297,15 +493,28 @@ if __name__ == "__main__":
     y0 = np.concatenate([K0, S0, [T0]])
 
     # --- Time horizon
-    t0, tf = 0.0, 50.0
-    t_eval = np.linspace(t0, tf, 501)
+    t0, tf = 0.0, 20.0  # Shorter time for faster best response computation
+    t_eval = np.linspace(t0, tf, 101)  # Fewer points for faster computation
 
-    # --- Choose scenario
-    mode = "arms_race"
-    # mode = "treaty"
-    policy_fn = simple_scenario_policy_builder(mode=mode)
+    # --- Choose policy
+    use_best_response = True  # Set to False to use simple scenario policy
 
-    # --- Run simulation
+    if use_best_response:
+        print("Using best response policy (Nash equilibrium)...")
+        print("Using discrete action grid with 5 values per action")
+        policy_fn = best_response_policy_builder(
+            params=params,
+            dt=0.1,
+            max_iterations=3,  # Reduced for speed
+            budget_constraint=True,  # Enforce aX + aS + aV <= 1
+        )
+    else:
+        print("Using fixed scenario policy...")
+        mode = "arms_race"
+        policy_fn = simple_scenario_policy_builder(mode=mode)
+
+    # --- Run simulation and track actions
+    print("Running simulation...")
     sol = simulate(
         t_span=(t0, tf),
         y0=y0,
@@ -319,6 +528,21 @@ if __name__ == "__main__":
     S_path = sol.y[3:6, :]
     T_path = sol.y[6, :]
 
+    # --- Reconstruct actions at each timestep
+    print("Reconstructing actions...")
+    aX_path = np.zeros((N_PLAYERS, len(t_eval)))
+    aS_path = np.zeros((N_PLAYERS, len(t_eval)))
+    aV_path = np.zeros((N_PLAYERS, len(t_eval)))
+
+    for ti, t in enumerate(t_eval):
+        if ti % 20 == 0:
+            print(f"  Progress: {ti}/{len(t_eval)}")
+        ctrl = policy_fn(t, sol.y[:, ti])
+        aX_path[:, ti] = ctrl.aX
+        aS_path[:, ti] = ctrl.aS
+        aV_path[:, ti] = ctrl.aV
+    print(f"  Progress: {len(t_eval)}/{len(t_eval)} - Done!")
+
     # --- Compute safety debt over time for each bloc
     debt_path = np.zeros_like(K_path)
     for ti in range(len(t_eval)):
@@ -330,15 +554,19 @@ if __name__ == "__main__":
         debt_path[:, ti] = safety_debt(st_t, params)
 
     # --- Print some summary stats
+    print("\n=== Final State ===")
     print("Final capabilities K:", K_path[:, -1])
     print("Final safety S:", S_path[:, -1])
     print("Final trust T:", T_path[-1])
     print("Final safety debt:", debt_path[:, -1])
+    print("\n=== Final Actions ===")
+    print("Final aX (acceleration):", aX_path[:, -1])
+    print("Final aS (safety):", aS_path[:, -1])
+    print("Final aV (verification):", aV_path[:, -1])
+    print("Final effort sum:", aX_path[:, -1] + aS_path[:, -1] + aV_path[:, -1])
 
-    import matplotlib.pyplot as plt
-
-    plt.plot(t_eval, K_path[US], label="US K")
-    plt.plot(t_eval, K_path[CN], label="CN K")
-    plt.plot(t_eval, K_path[EU], label="EU K")
-    plt.legend()
-    plt.savefig("plots/CST.png")
+    # --- Plot results
+    print("\nGenerating plots...")
+    plot_results(t_eval, K_path)
+    plot_actions(t_eval, aX_path, aS_path, aV_path)
+    print("Done!")
