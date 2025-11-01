@@ -33,33 +33,33 @@ np.set_printoptions(precision=3, suppress=True)
 @dataclass
 class Params:
     # Time / integration
-    dt: float = 0.25            # years per decision step (quarterly)
-    T: float = 10.0             # total simulation years
+    dt: float = 0.25  # years per decision step (quarterly)
+    T: float = 10.0  # total simulation years
     rel_tol: float = 1e-6
     abs_tol: float = 1e-8
 
     # Depreciation / decay
-    delta_K: float = 0.08       # capital obsolescence
-    delta_E: float = 0.03       # energy capacity retirement
-    delta_S: float = 0.04       # safety knowledge depreciation
-    delta_T: float = 0.05       # trust decay
-    delta_R: float = 0.02       # resource depletion baseline
+    delta_K: float = 0.08  # capital obsolescence
+    delta_E: float = 0.03  # energy capacity retirement
+    delta_S: float = 0.04  # safety knowledge depreciation
+    delta_T: float = 0.05  # trust decay
+    delta_R: float = 0.02  # resource depletion baseline
 
     # Investment/productivity baselines
-    inv_scale_K: float = 1.5    # scale linking acceleration to capital invest
-    inv_scale_S: float = 0.9    # scale linking safety effort to safety invest
+    inv_scale_K: float = 1.5  # scale linking acceleration to capital invest
+    inv_scale_S: float = 0.9  # scale linking safety effort to safety invest
     build_E_scale: float = 0.8  # scale for power buildout
     efficiency_growth: float = 0.25  # annualized efficiency trend (fraction)
 
     # Scarcity / price
-    R0: float = 100.0           # initial/nominal resource stock (global)
-    p0: float = 1.0             # base resource price
-    eta: float = 1.2            # scarcity curvature (>1 => convex)
-    rho_base: float = 4.0       # baseline replenishment (resource units / yr)
+    R0: float = 100.0  # initial/nominal resource stock (global)
+    p0: float = 1.0  # base resource price
+    eta: float = 1.2  # scarcity curvature (>1 => convex)
+    rho_base: float = 4.0  # baseline replenishment (resource units / yr)
     coop_build_bonus: float = 0.8  # how much co-op boosts replenishment
 
     # Spillovers
-    phi_spill: float = 0.12     # strength of safety spillover via verification
+    phi_spill: float = 0.12  # strength of safety spillover via verification
 
     # Politics / backlash weights
     psi_success: float = 0.15
@@ -72,7 +72,7 @@ class Params:
     sigma_spill_payoff: float = 0.8
 
     # Risk model params
-    base_hazard: float = 0.02     # baseline hazard
+    base_hazard: float = 0.02  # baseline hazard
     hazard_cap_elastic: float = 0.7
     hazard_safety_elastic: float = 1.0
     hazard_verif_factor: float = 0.6  # multiplicative reduction when verified
@@ -101,18 +101,20 @@ class Params:
 BLOCS = ["US", "CN", "EU"]
 NB = len(BLOCS)
 
+
 # State vector y layout:
 # For each bloc i: [K_i, E_i, S_i, T_i, P_i]  => 5 * NB entries
 # Then global resource R at the end
 def pack_state(K, E, S, T, P, R):
     return np.concatenate([K, E, S, T, P, np.array([R])])
 
+
 def unpack_state(y):
     K = y[0:NB]
-    E = y[NB:2*NB]
-    S = y[2*NB:3*NB]
-    T = y[3*NB:4*NB]
-    P = y[4*NB:5*NB]
+    E = y[NB : 2 * NB]
+    S = y[2 * NB : 3 * NB]
+    T = y[3 * NB : 4 * NB]
+    P = y[4 * NB : 5 * NB]
     R = y[-1]
     return K, E, S, T, P, R
 
@@ -124,6 +126,7 @@ def resource_price(R, p0, R0, eta):
     # Convex scarcity price
     R_eff = max(R, 1e-6)
     return p0 * (R0 / R_eff) ** eta
+
 
 def compute_capacity(K, E, R, params: Params):
     """Effective compute capacity per bloc constrained by (capital, energy, resource)."""
@@ -137,29 +140,36 @@ def compute_capacity(K, E, R, params: Params):
     C = np.minimum(fK, fE) * fR
     return C
 
+
 def efficiency_multiplier(t_years, g):
     # Continuous compounding approximation to performance/efficiency trend
     return math.exp(g * t_years)
 
+
 def lead_prob(C_eff, aX, temp):
     # Softmax over aggressive compute * acceleration
-    score = C_eff * (0.5 + 0.5*aX)  # ensure >0
+    score = C_eff * (0.5 + 0.5 * aX)  # ensure >0
     # softmax with temperature
     ex = np.exp(score / max(temp, 1e-6))
     return ex / np.sum(ex)
 
+
 def hazard_rate(C_eff_i, aS_i, S_i, verif_level, params: Params):
     # Simple hazard declines with safety effort & stock, and with verification
     base = params.base_hazard
-    cap_term = (C_eff_i ** params.hazard_cap_elastic)
+    cap_term = C_eff_i**params.hazard_cap_elastic
     safety_term = 1.0 / (1.0 + aS_i + S_i) ** params.hazard_safety_elastic
-    verif_term = (params.hazard_verif_factor if verif_level > 0.5 else 1.0)
+    verif_term = params.hazard_verif_factor if verif_level > 0.5 else 1.0
     return base * cap_term * safety_term * verif_term
 
+
 def political_drift(success_i, incident_i, grid_stress_i, params: Params):
-    return (params.psi_success * success_i
-            - params.psi_incident * incident_i
-            - params.psi_grid_stress * max(0.0, grid_stress_i - params.grid_stress_threshold))
+    return (
+        params.psi_success * success_i
+        - params.psi_incident * incident_i
+        - params.psi_grid_stress
+        * max(0.0, grid_stress_i - params.grid_stress_threshold)
+    )
 
 
 # ---------------------------
@@ -182,27 +192,38 @@ def payoff_for_bloc(i, actions, state, t_years, params: Params):
 
     # Risk construction
     verif_level = np.mean(aV)  # crude: global verification climate
-    hazards = np.array([hazard_rate(C_eff[j], aS[j], S[j], verif_level, params) for j in range(NB)])
+    hazards = np.array(
+        [hazard_rate(C_eff[j], aS[j], S[j], verif_level, params) for j in range(NB)]
+    )
     # Systemic incident probability approximation
     p_incident = 1.0 - np.exp(-np.sum(hazards))
 
     # Scarcity price
     pR = resource_price(R, params.p0, params.R0, params.eta)
-    use_i = params.resource_per_compute * C_eff[i] * (0.5 + 0.5*aX[i])  # usage grows with aggressiveness
+    use_i = (
+        params.resource_per_compute * C_eff[i] * (0.5 + 0.5 * aX[i])
+    )  # usage grows with aggressiveness
 
     # Spillover benefit from verification
-    spill_i = params.sigma_spill_payoff * aV[i] * np.mean(S[np.arange(NB)!=i]) * params.phi_spill
+    spill_i = (
+        params.sigma_spill_payoff
+        * aV[i]
+        * np.mean(S[np.arange(NB) != i])
+        * params.phi_spill
+    )
 
     # Domestic political grid stress proxy (demand/supply ratio via energy bottleneck)
     demand_i = C_eff[i] ** 2  # inverse of sqrt mapping -> rough
     supply_i = max(E[i], 1e-6)
     grid_stress_i = demand_i / supply_i
 
-    payoff = (params.beta_first_mover * p_lead[i]
-              - params.kappa_risk_cost * p_incident
-              - pR * use_i
-              - grid_stress_i * 0.05
-              + spill_i)
+    payoff = (
+        params.beta_first_mover * p_lead[i]
+        - params.kappa_risk_cost * p_incident
+        - pR * use_i
+        - grid_stress_i * 0.05
+        + spill_i
+    )
     return payoff
 
 
@@ -235,6 +256,65 @@ def choose_actions_myopic(state, t_years, params: Params):
     return best_actions  # shape (NB, 3): columns = [aS, aV, aX]
 
 
+def choose_actions_iterative_best_response(
+    state, t_years, params: Params, max_iterations: int = 10, tolerance: float = 1e-4
+):
+    """
+    Iterative best-response dynamics: each bloc sequentially optimizes their action
+    given the other blocs' current actions, repeating until convergence.
+
+    Args:
+        state: Current state vector
+        t_years: Current time in years
+        params: Model parameters
+        max_iterations: Maximum number of iterations through all blocs
+        tolerance: Convergence threshold (max action change)
+
+    Returns:
+        actions: Array of shape (NB, 3) with columns [aS, aV, aX]
+    """
+    grid_S = np.linspace(0.0, 1.0, params.grid_aS)
+    grid_X = np.linspace(0.0, 1.0, params.grid_aX)
+    grid_V = np.linspace(0.0, 1.0, params.grid_aV)
+
+    # Build candidate actions (all combinations)
+    cand = np.array([(s, v, x) for s in grid_S for v in grid_V for x in grid_X])
+
+    # Initialize with middle-of-grid actions
+    actions = np.ones((NB, 3)) * 0.5
+
+    for iteration in range(max_iterations):
+        actions_old = actions.copy()
+
+        # Each bloc takes a turn optimizing
+        for i in range(NB):
+            best_action_i = actions[i].copy()
+            best_payoff_i = -1e18
+
+            # Try each candidate action for bloc i
+            for idx in range(cand.shape[0]):
+                # Create trial action profile: others unchanged, bloc i tries candidate
+                trial_actions = actions.copy()
+                trial_actions[i] = cand[idx]
+
+                # Compute payoff for bloc i under this action profile
+                payoff_i = payoff_for_bloc(i, trial_actions, state, t_years, params)
+
+                if payoff_i > best_payoff_i:
+                    best_payoff_i = payoff_i
+                    best_action_i = cand[idx].copy()
+
+            # Update bloc i's action to their best response
+            actions[i] = best_action_i
+
+        # Check convergence: max absolute change across all actions
+        max_change = np.max(np.abs(actions - actions_old))
+        if max_change < tolerance:
+            break
+
+    return actions
+
+
 # ---------------------------
 # Continuous dynamics
 # ---------------------------
@@ -252,31 +332,47 @@ def rhs_continuous(t, y, actions, params: Params):
     I_S = np.minimum(invest_cap, params.inv_scale_S * aS * (1.0 + P))
 
     # Power buildout slowed by lag and politics
-    B_E = (params.build_E_scale * (0.5 + 0.5*aX) * (1.0 + 0.5*P)) / (1.0 + params.power_build_lag)
+    B_E = (params.build_E_scale * (0.5 + 0.5 * aX) * (1.0 + 0.5 * P)) / (
+        1.0 + params.power_build_lag
+    )
 
     # Effective compute for resource usage estimates
     C_raw = compute_capacity(K, E, R, params)
     C_eff = C_raw * efficiency_multiplier(t, params.efficiency_growth)
-    use = params.resource_per_compute * C_eff * (0.5 + 0.5*aX)
+    use = params.resource_per_compute * C_eff * (0.5 + 0.5 * aX)
 
     # Resource replenishment boosted by cooperation (sum aV)
     rho = params.rho_base + params.coop_build_bonus * np.sum(aV)
 
     dK = I_K - params.delta_K * K
     dE = B_E - params.delta_E * E
-    dS = I_S + params.phi_spill * (aV[:, None] * S).sum(axis=0) / max(NB-1, 1) - params.delta_S * S
+    dS = (
+        I_S
+        + params.phi_spill * (aV[:, None] * S).sum(axis=0) / max(NB - 1, 1)
+        - params.delta_S * S
+    )
     dT = 0.2 * aV - params.delta_T * T  # trust builds with verification
     # Incidents proxy (not Poisson here; we use hazard sum to push P)
     verif_level = np.mean(aV)
-    hazards = np.array([hazard_rate(C_eff[j], aS[j], S[j], verif_level, params) for j in range(NB)])
+    hazards = np.array(
+        [hazard_rate(C_eff[j], aS[j], S[j], verif_level, params) for j in range(NB)]
+    )
     p_incident = 1.0 - np.exp(-np.sum(hazards) * 0.25)  # scaled in interval
     # Grid stress proxy
     demand = C_eff**2
     grid_stress = demand / np.maximum(E, 1e-6)
 
-    dP = np.array([political_drift(success_i=C_eff[i], incident_i=p_incident,
-                                   grid_stress_i=grid_stress[i], params=params)
-                   for i in range(NB)])
+    dP = np.array(
+        [
+            political_drift(
+                success_i=C_eff[i],
+                incident_i=p_incident,
+                grid_stress_i=grid_stress[i],
+                params=params,
+            )
+            for i in range(NB)
+        ]
+    )
 
     dR = rho - np.sum(use) - params.delta_R * R
 
@@ -286,7 +382,21 @@ def rhs_continuous(t, y, actions, params: Params):
 # ---------------------------
 # Simulation driver
 # ---------------------------
-def simulate(initial_state: np.ndarray, params: Params, seed: int = 0):
+def simulate(
+    initial_state: np.ndarray,
+    params: Params,
+    seed: int = 0,
+    use_iterative_br: bool = False,
+):
+    """
+    Run simulation with discrete action selection and continuous integration.
+
+    Args:
+        initial_state: Initial state vector
+        params: Model parameters
+        seed: Random seed (for future stochastic extensions)
+        use_iterative_br: If True, use iterative best-response; if False, use myopic joint search
+    """
     rng = np.random.default_rng(seed)
     horizon_steps = int(params.T / params.dt)
 
@@ -299,8 +409,11 @@ def simulate(initial_state: np.ndarray, params: Params, seed: int = 0):
     t = 0.0
 
     for step in range(horizon_steps):
-        # Choose actions given current state (myopic joint selection on grid)
-        a = choose_actions_myopic(y, t, params)
+        # Choose actions given current state
+        if use_iterative_br:
+            a = choose_actions_iterative_best_response(y, t, params)
+        else:
+            a = choose_actions_myopic(y, t, params)
         actions_log.append(a.copy())
 
         # Integrate over [t, t+dt] with actions held constant
@@ -311,7 +424,7 @@ def simulate(initial_state: np.ndarray, params: Params, seed: int = 0):
             rtol=params.rel_tol,
             atol=params.abs_tol,
             method="RK45",
-            max_step=params.dt / 8.0
+            max_step=params.dt / 8.0,
         )
         y = sol.y[:, -1]
         t = t + params.dt
@@ -329,12 +442,12 @@ def simulate(initial_state: np.ndarray, params: Params, seed: int = 0):
 # ---------------------------
 def default_initial_state():
     # Initialize blocs with slightly different strengths
-    K0 = np.array([12.0, 9.0, 7.0])   # capital
-    E0 = np.array([10.0, 8.0, 7.0])   # power capacity
-    S0 = np.array([2.0, 1.2, 1.5])    # safety
-    T0 = np.array([0.8, 0.4, 0.9])    # trust
-    P0 = np.array([1.5, 1.2, 1.1])    # political capital
-    R0 = 100.0                        # global resource
+    K0 = np.array([12.0, 9.0, 7.0])  # capital
+    E0 = np.array([10.0, 8.0, 7.0])  # power capacity
+    S0 = np.array([2.0, 1.2, 1.5])  # safety
+    T0 = np.array([0.8, 0.4, 0.9])  # trust
+    P0 = np.array([1.5, 1.2, 1.1])  # political capital
+    R0 = 100.0  # global resource
     return pack_state(K0, E0, S0, T0, P0, R0)
 
 
@@ -414,9 +527,12 @@ def plot_results(times, states, actions, params: Params):
 
 
 def main():
+    use_iterative_br = True
     params = Params()
     y0 = default_initial_state()
-    times, states, actions = simulate(y0, params, seed=42)
+    times, states, actions = simulate(
+        y0, params, seed=42, use_iterative_br=use_iterative_br
+    )
 
     # Save numpy outputs if needed
     np.save("times.npy", times)
