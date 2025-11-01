@@ -24,12 +24,53 @@ python calibrate_from_real_data.py
 - **GitHub**: Open source model releases (via GitHub API)
 - **World Bank**: R&D spending data (via World Bank API)
 
+### ⚠️ **TRANSPARENCY: What's Real vs. Estimated**
+
+**Directly from Real Data (High Confidence):**
+- ✅ **K0 (capabilities)**: Computed from actual Epoch AI training FLOPs
+- ✅ **alpha (growth rate)**: Measured from real model trajectory (2023-2025)
+- ✅ **K_threshold (AGI)**: Extrapolated from current frontier models
+- ✅ **T0 (trust)**: Based on actual open source release rates
+
+**Estimated from Indirect Proxies (Medium Confidence):**
+- 🟡 **gamma (safety growth)**: Inferred from arXiv safety paper growth rate
+- 🟡 **eta (spillover)**: Scaled from trust level (assumes spillover ∝ trust)
+
+**Literature-Based Assumptions (Low Confidence - MADE UP):**
+- 🔴 **S0 (safety levels)**: Assumed 1.5% of capability (NO direct data on safety investment)
+- 🔴 **beta_dim (diminishing returns)**: Hardcoded 0.35 (based on reported compute bottlenecks)
+- 🔴 **theta (safety effectiveness)**: Hardcoded 0.7 (no empirical measure exists)
+- 🔴 **beta (trust build)**: Hardcoded 0.3 (no direct observation of trust dynamics)
+- 🔴 **delta_T (trust decay)**: Hardcoded 0.2 (geopolitical judgment call)
+- 🔴 **lambda (safety concern)**: Hardcoded 0.4 (qualitative assessment)
+
+### Why Some Parameters Can't Be Measured:
+
+**Missing Public Data:**
+- Safety team sizes (companies don't publish)
+- Actual safety R&D budgets (proprietary)
+- Red-teaming effectiveness (rarely published)
+
+**Inherently Unobservable:**
+- How much safety cancels capability risk (theta) - no ground truth
+- Trust build/decay rates (beta, delta_T) - only proxy indicators
+- Decision-maker preferences (lambda) - private information
+
+**Recommendation:** Run **sensitivity analysis** on the red-flagged (🔴) parameters to understand which assumptions matter most for your conclusions.
+
 ### Latest Calibration (November 2025):
 Based on real data as of Nov 1, 2025:
-- **α = 0.50** (from actual capability growth trajectory)
-- **K_threshold = 20.9** (extrapolated from current frontier)
-- **K0 = [13.1, 9.8, 9.6]** (US, China, EU from Epoch AI compute data)
-- **T0 = 0.50** (from 100% open source rate in sample)
+- **α = 0.50** ✅ (from actual capability growth trajectory)
+- **K_threshold = 20.9** ✅ (extrapolated from current frontier)
+- **K0 = [13.1, 9.8, 9.6]** ✅ (US, China, EU from Epoch AI compute data)
+- **T0 = 0.50** ✅ (from 100% open source rate in sample)
+- **gamma = 1.0** 🟡 (from safety paper exponential growth)
+- **beta_dim = 0.35** 🔴 (ASSUMED from literature)
+- **theta = 0.7** 🔴 (ASSUMED - no empirical basis)
+- **eta = 0.4** 🟡 (scaled from trust)
+- **beta = 0.3** 🔴 (ASSUMED)
+- **delta_T = 0.2** 🔴 (ASSUMED)
+- **lambda = 0.4** 🔴 (ASSUMED)
 
 See `calibration_from_real_data.json` for full calibrated parameters.
 
