@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import json
 import math
 from typing import Callable
 
@@ -296,6 +297,52 @@ def plot_actions(t_eval, aX_path, aS_path, aV_path):
     plt.close()
     print("Saved action plot to plots/CST_actions.png")
 
+
+def load_calibration_from_json(json_path: str) -> tuple[Params, np.ndarray]:
+    """
+    Load model parameters and initial conditions from a JSON calibration file.
+
+    Args:
+        json_path: Path to the JSON file containing calibration data
+
+    Returns:
+        tuple of (Params, y0) where y0 is the initial state vector
+    """
+    with open(json_path, 'r') as f:
+        data = json.load(f)
+
+    # Load parameters
+    params_dict = data['params']
+    params = Params(
+        alpha=params_dict['alpha'],
+        gamma=params_dict['gamma'],
+        eta=params_dict['eta'],
+        beta=params_dict['beta'],
+        delta_T=params_dict['delta_T'],
+        theta=params_dict['theta'],
+        K_threshold=params_dict['K_threshold'],
+        beta_dim=params_dict['beta_dim'],
+        lam=params_dict['lam'],
+    )
+
+    # Load initial conditions
+    ic = data['initial_conditions']
+    K0 = np.array(ic['K0'])
+    S0 = np.array(ic['S0'])
+    T0 = ic['T0']
+    y0 = np.concatenate([K0, S0, [T0]])
+
+    # Print metadata if available
+    if 'metadata' in data:
+        meta = data['metadata']
+        print(f"Loaded calibration from: {json_path}")
+        print(f"  Calibration date: {meta.get('calibration_date', 'N/A')}")
+        print(f"  Target year: {meta.get('target_year', 'N/A')}")
+        print(f"  Data sources: {', '.join(meta.get('data_sources', []))}")
+
+    return params, y0
+
+
 ###############################################################################
 # 6. Nash / best response implementation
 ###############################################################################
@@ -471,26 +518,35 @@ def best_response_policy_builder(
 # 7. Example usage / quick demo
 ###############################################################################
 if __name__ == "__main__":
-    # --- Define parameters
-    params = Params(
-        alpha=1.0,       # capability growth rate per accel effort
-        gamma=0.5,       # safety growth rate per safety effort
-        eta=0.2,         # spillover strength (trust -> shared safety)
-        beta=0.3,        # trust build rate from verification effort
-        delta_T=0.1,     # trust decay
-        theta=0.8,       # how effective safety is at offsetting capability
-        K_threshold=10.0,  # AGI threshold for recursive self-improvement
-        beta_dim=0.3,    # diminishing returns strength (higher = more diminishing)
-        lam=0.5,         # payoff weighting for safety debt (0=ignore, 1=full weight)
-    )
+    # --- Option to load from JSON calibration file or use hardcoded values
+    use_calibration_file = True  # Set to False to use hardcoded params below
+    calibration_file = "calibration_from_real_data.json"
 
-    # --- Initial conditions:
-    # Let's say everyone starts modest on capability, low-ish safety,
-    # and almost no trust.
-    K0 = np.array([12.0, 9.0, 7.0])   # starting capability levels
-    S0 = np.array([0.2, 0.12, 0.15])   # starting safety levels
-    T0 = 0.1                         # low verification regime
-    y0 = np.concatenate([K0, S0, [T0]])
+    if use_calibration_file:
+        print(f"Loading parameters and initial conditions from {calibration_file}...")
+        params, y0 = load_calibration_from_json(calibration_file)
+    else:
+        print("Using hardcoded parameters and initial conditions...")
+        # --- Define parameters
+        params = Params(
+            alpha=1.0,       # capability growth rate per accel effort
+            gamma=0.5,       # safety growth rate per safety effort
+            eta=0.2,         # spillover strength (trust -> shared safety)
+            beta=0.3,        # trust build rate from verification effort
+            delta_T=0.1,     # trust decay
+            theta=0.8,       # how effective safety is at offsetting capability
+            K_threshold=10.0,  # AGI threshold for recursive self-improvement
+            beta_dim=0.3,    # diminishing returns strength (higher = more diminishing)
+            lam=0.5,         # payoff weighting for safety debt (0=ignore, 1=full weight)
+        )
+
+        # --- Initial conditions:
+        # Let's say everyone starts modest on capability, low-ish safety,
+        # and almost no trust.
+        K0 = np.array([12.0, 9.0, 7.0])   # starting capability levels
+        S0 = np.array([0.2, 0.12, 0.15])   # starting safety levels
+        T0 = 0.1                         # low verification regime
+        y0 = np.concatenate([K0, S0, [T0]])
 
     # --- Time horizon
     t0, tf = 0.0, 20.0  # Shorter time for faster best response computation
