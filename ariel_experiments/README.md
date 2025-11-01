@@ -33,6 +33,25 @@ Six-scenario comparative analysis with win condition detection:
 
 **Output**: Comparative visualizations of winners, safety ratios, win times, and debt evolution; summary statistics table.
 
+### `scenario_comparison_v2.py`
+Modified version of `scenario_comparison.py` using the enhanced model (`CST_ag copy.py`) with per-player capability growth efficiency (`alpha_player`) and stronger diminishing returns to create more diverse race outcomes. Six scenarios designed to test different efficiency distributions:
+
+1. **Baseline Arms Race (Modified)**: More balanced initial conditions (`K0=[5.0, 4.5, 3.5]`), stronger diminishing returns (`beta_dim=0.5`)
+2. **China High Efficiency**: CN has 15% higher capability growth efficiency (`alpha_player=[1.0, 1.15, 1.0]`)
+3. **EU Competitive**: EU has 10% efficiency advantage (`alpha_player=[1.0, 1.0, 1.1]`), more balanced start (`K0=[4.5, 4.0, 4.5]`), stronger spillover
+4. **International Treaty (Modified)**: Higher initial trust (`T0=0.2`), easier trust building (`beta=0.4`), slower decay (`delta_T=0.08`)
+5. **Slowed AI Progress (Diverse)**: Lower overall growth (`alpha=0.7`), per-player differences (`alpha_player=[0.7, 0.8, 0.65]`), strong diminishing returns (`beta_dim=0.6`)
+6. **High Safety Spillover (CN Focus)**: CN and EU efficiency edges (`alpha_player=[1.0, 1.1, 1.05]`), strong spillover effects
+
+**Configuration**: `t_span=(0.0, 50.0)`, 501 evaluation points. Imports from `CST_ag copy.py` which supports per-player `alpha_player` parameter.
+
+**Key model modifications**:
+- Per-player capability growth efficiency via `alpha_player` array (overrides scalar `alpha` if provided)
+- Stronger diminishing returns (`beta_dim=0.4-0.6`) to help laggards catch up before exponential phase
+- More balanced initial conditions in several scenarios
+
+**Output**: Comparative visualizations of winners, safety ratios, win times, and debt evolution; summary statistics table including winner diversity analysis. Saves to `plots/scenario_comparison_v2.png`.
+
 ### `sensitivity_analysis_v2.py`
 Parameter sensitivity focused on race outcomes (winner identification and safety state at win).
 
@@ -72,15 +91,18 @@ Trajectory inspection tool for debugging and validation.
 
 ## Dependencies
 
-All scripts import from `CST_ag`:
+Most scripts import from `CST_ag`:
 - `Params`, `State`, `simulate()`, `simple_scenario_policy_builder()`
 - Additional: `safety_debt()`, `unpack_state()` where used
+
+**Exception**: `scenario_comparison_v2.py` imports from `CST_ag copy.py` which extends `Params` with per-player capability efficiency (`alpha_player`).
 
 ## Output
 
 Plots are saved to `plots/` directory:
 - `scenario_analysis_revised.png`
 - `scenario_comparison.png`
+- `scenario_comparison_v2.png`
 - `sensitivity_analysis_v2.png`
 - `sensitivity_analysis.png`
 - `trajectory_verification.png`
