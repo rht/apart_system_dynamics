@@ -61,10 +61,10 @@ class Params:
     # Spillovers
     phi_spill: float = 0.12  # strength of safety spillover via verification
 
-    # Politics / backlash weights
+    # Politics / backlash weights (must add up to 1)
     psi_success: float = 0.15
     psi_incident: float = 0.6
-    psi_grid_stress: float = 0.35
+    psi_grid_stress: float = 0.25
 
     # Payoff weights
     beta_first_mover: float = 2.0
@@ -212,10 +212,10 @@ def payoff_for_bloc(i, actions, state, t_years, params: Params):
         * params.phi_spill
     )
 
-    # Domestic political grid stress proxy (demand/supply ratio via energy bottleneck)
-    demand_i = C_eff[i] ** 2  # inverse of sqrt mapping -> rough
-    supply_i = max(E[i], 1e-6)
-    grid_stress_i = demand_i / supply_i
+    # Domestic political grid stress proxy (actual energy usage vs. capacity)
+    energy_usage_i = C_eff[i] * (0.5 + 0.5 * aX[i])  # actual energy demand
+    energy_capacity_i = max(E[i], 1e-6)
+    grid_stress_i = energy_usage_i / energy_capacity_i
 
     payoff = (
         params.beta_first_mover * p_lead[i]
@@ -352,15 +352,21 @@ def rhs_continuous(t, y, actions, params: Params):
         - params.delta_S * S
     )
     dT = 0.2 * aV - params.delta_T * T  # trust builds with verification
+
+    # Prevent stocks from going negative (non-negativity constraints)
+    # If a stock is at/near zero and its derivative is negative, clamp to zero
+    dK = np.where((K <= 1e-6) & (dK < 0), 0.0, dK)
+    dE = np.where((E <= 1e-6) & (dE < 0), 0.0, dE)
+    dS = np.where((S <= 1e-6) & (dS < 0), 0.0, dS)
     # Incidents proxy (not Poisson here; we use hazard sum to push P)
     verif_level = np.mean(aV)
     hazards = np.array(
         [hazard_rate(C_eff[j], aS[j], S[j], verif_level, params) for j in range(NB)]
     )
     p_incident = 1.0 - np.exp(-np.sum(hazards) * 0.25)  # scaled in interval
-    # Grid stress proxy
-    demand = C_eff**2
-    grid_stress = demand / np.maximum(E, 1e-6)
+    # Grid stress proxy (actual energy usage vs. capacity)
+    energy_usage = C_eff * (0.5 + 0.5 * aX)  # actual energy demand
+    grid_stress = energy_usage / np.maximum(E, 1e-6)
 
     dP = np.array(
         [
@@ -375,6 +381,10 @@ def rhs_continuous(t, y, actions, params: Params):
     )
 
     dR = rho - np.sum(use) - params.delta_R * R
+
+    # Prevent global resource from going negative
+    if R <= 1e-6 and dR < 0:
+        dR = 0.0
 
     return np.concatenate([dK, dE, dS, dT, dP, np.array([dR])])
 
@@ -442,6 +452,7 @@ def simulate(
 # ---------------------------
 def default_initial_state():
     # Initialize blocs with slightly different strengths
+    # US, CN, EU
     K0 = np.array([12.0, 9.0, 7.0])  # capital
     E0 = np.array([10.0, 8.0, 7.0])  # power capacity
     S0 = np.array([2.0, 1.2, 1.5])  # safety
@@ -492,11 +503,11 @@ def plot_results(times, states, actions, params: Params):
     # 3) Safety effort
     plt.figure()
     for i, bloc in enumerate(BLOCS):
-        plt.plot(times[:-1], aS[:, i], label=f"{bloc}")
+        plt.step(times[:-1], aS[:, i], where="post", label=f"{bloc}")
     plt.title("Safety Effort aS")
     plt.xlabel("Years")
     plt.ylabel("aS")
-    plt.ylim(0, 1)
+    plt.ylim(-0.1, 1.1)
     plt.legend()
     plt.tight_layout()
     plt.savefig("plots/fig_aS.png", dpi=160)
@@ -504,11 +515,11 @@ def plot_results(times, states, actions, params: Params):
     # 4) Verification
     plt.figure()
     for i, bloc in enumerate(BLOCS):
-        plt.plot(times[:-1], aV[:, i], label=f"{bloc}")
+        plt.step(times[:-1], aV[:, i], where="post", label=f"{bloc}")
     plt.title("Verification / Cooperation aV")
     plt.xlabel("Years")
     plt.ylabel("aV")
-    plt.ylim(0, 1)
+    plt.ylim(-0.1, 1.1)
     plt.legend()
     plt.tight_layout()
     plt.savefig("plots/fig_aV.png", dpi=160)
@@ -516,11 +527,11 @@ def plot_results(times, states, actions, params: Params):
     # 5) Acceleration
     plt.figure()
     for i, bloc in enumerate(BLOCS):
-        plt.plot(times[:-1], aX[:, i], label=f"{bloc}")
+        plt.step(times[:-1], aX[:, i], where="post", label=f"{bloc}")
     plt.title("Acceleration aX")
     plt.xlabel("Years")
     plt.ylabel("aX")
-    plt.ylim(0, 1)
+    plt.ylim(-0.1, 1.1)
     plt.legend()
     plt.tight_layout()
     plt.savefig("plots/fig_aX.png", dpi=160)
