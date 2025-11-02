@@ -1,209 +1,176 @@
-# AI Race Simulation (SciPy-only)
+# AI Race Simulation: Capability-Safety-Trust (CST) Model
 
 ## Overview
 
-This prototype models an AI race between three blocs (US, China, EU) using hybrid system dynamics and game-theoretic action selection. Each bloc chooses three continuous actions at discrete intervals, then continuous dynamics evolve the state between decisions.
+Continuous-time ODE model of AI race dynamics between three blocs (US, China, EU) using `scipy.integrate.solve_ivp`. The model tracks capability growth, safety investment, and trust formation with game-theoretic policy selection.
 
-The simulation uses `scipy.integrate.solve_ivp` for ODE integration and includes resource scarcity, political constraints, safety spillovers, and hazard modeling.
+Key features:
+- Two-phase capability growth (diminishing returns → recursive self-improvement at threshold)
+- Safety spillovers mediated by trust/verification
+- Nash equilibrium computation via iterated best response
+- Budget-constrained actions: aX + aS + aV = 1
 
 ---
 
 ## State Variables
 
-Each bloc *i* maintains five stocks:
+Per-bloc state (i ∈ {US, CN, EU}):
 
-| Symbol | Meaning | Notes |
-|--------|---------|-------|
-| **Kᵢ** | Capital stock | AI development capacity (compute hardware) |
-| **Eᵢ** | Energy/power capacity | Infrastructure constraint on compute usage |
-| **Sᵢ** | Safety knowledge | Accumulated safety research; reduces hazard |
-| **Tᵢ** | Trust | Builds through verification/cooperation |
-| **Pᵢ** | Political capital | Influences investment caps and buildout rates |
+| Symbol | Description |
+|--------|-------------|
+| **Kᵢ** | Capability stock (AI development level) |
+| **Sᵢ** | Safety stock (accumulated safety research) |
 
-Plus one global variable:
+Global state:
 
-| Symbol | Meaning |
-|--------|---------|
-| **R** | Shared scarce resource | Energy, rare materials, or talent pool |
+| Symbol | Description |
+|--------|-------------|
+| **T** | Trust/verification level (scalar, shared across blocs) |
+
+Total state dimension: 7 (3K + 3S + 1T)
 
 ---
 
 ## Actions
 
-Each bloc chooses three independent actions each decision step (default: quarterly):
+Each bloc allocates effort across three activities with budget constraint:
 
-| Action | Range | Effect |
-|--------|-------|--------|
-| **aS** | [0,1] | Safety effort: increases S, reduces hazard |
-| **aV** | [0,1] | Verification/cooperation: builds trust T, enables safety spillovers |
-| **aX** | [0,1] | Acceleration: drives capital K and energy E buildout, depletes R |
+| Action | Range | Constraint | Effect |
+|--------|-------|-----------|--------|
+| **aXᵢ** | [0,1] | aXᵢ + aSᵢ + aVᵢ = 1 | Acceleration effort: increases capability K |
+| **aSᵢ** | [0,1] | | Safety effort: increases safety S |
+| **aVᵢ** | [0,1] | | Verification/cooperation: builds global trust T |
 
-Actions are **independent** (no budget constraint). Higher values = more effort.
+Budget constraint enforced in best-response and Bostrom minimal policies.
 
----
+## Dynamics
 
-## Dynamics Summary
+### Capability (K)
 
-### Capital (K)
-- Grows with acceleration investment (`inv_scale_K * aX`)
-- Capped by political capital P
-- Depreciates at rate `delta_K`
+Two-phase growth model representing transition from diminishing returns to recursive self-improvement:
 
-### Energy (E)
-- Built out based on acceleration and political support
-- Slowed by `power_build_lag`
-- Depreciates at rate `delta_E`
+**Phase 1 (K < K_threshold):** Diminishing returns (pre-AGI)
+```
+dKᵢ/dt = α * aXᵢ / (1 + β_dim * Kᵢ)
+```
+
+**Phase 2 (K > K_threshold):** Exponential growth (recursive self-improvement)
+```
+dKᵢ/dt = α * aXᵢ * Kᵢ
+```
+
+Smooth transition via tanh centered at K_threshold with width `transition_width`. Physically represents transition from "superhuman coder" to "superhuman AI researcher".
 
 ### Safety (S)
-- Grows with safety investment (`inv_scale_S * aS`)
-- Receives spillovers from other blocs' safety when verification is active
-- Depreciates at rate `delta_S`
+
+Direct investment plus spillovers from other blocs mediated by trust:
+```
+dSᵢ/dt = γᵢ * aSᵢ + η * T * avg_other_Sᵢ
+```
+where `avg_other_Sᵢ = (Σⱼ Sⱼ - Sᵢ) / (N-1)` and γᵢ is bloc-specific safety productivity.
+
+No depreciation (knowledge accumulates).
 
 ### Trust (T)
-- Builds with verification effort (0.2 * aV)
-- Decays at rate `delta_T`
 
-### Political Capital (P)
-- Increases with successful compute progress
-- Decreases with incidents and grid stress
-- Grid stress = compute demand exceeds energy supply
-
-### Global Resource (R)
-- Replenishes at base rate `rho_base`
-- Cooperation (sum of aV) boosts replenishment
-- Depleted by compute usage (scales with C_eff and aX)
-- Natural decay at rate `delta_R`
-
-### Compute Capacity
-Effective compute is bottlenecked by three factors:
+Global verification regime built by cooperation, decays without maintenance:
 ```
-C_eff = min(sqrt(K), sqrt(E)) * (R/R0) * exp(efficiency_growth * t)
+dT/dt = β * mean(aVᵢ) - δ_T * T
 ```
 
-### Hazard Model
-Each bloc has an incident hazard rate:
+Higher trust enables safety spillovers across blocs.
+
+## Policy Modes
+
+Three policy implementations available:
+
+### 1. Simple Scenario Policy
+Fixed actions independent of state. Modes:
+- `arms_race`: high acceleration (0.9), low safety (0.1), low verification (0.05)
+- `treaty`: moderate acceleration (0.6), higher safety (0.5), higher verification (0.5)
+
+### 2. Best Response Policy (Nash Equilibrium)
+Iterative best response to compute approximate Nash equilibrium:
+- Each bloc optimizes given others' current actions via grid search
+- Supports lookahead with exponential discounting (strategic)
+- Optional `phase1_only_lookahead`: agents below threshold ignore exponential growth in projections
+- Randomized player ordering each iteration for better convergence
+- Converges when max action change < 1e-4
+
+### 3. Bostrom Minimal Information Policy
+Myopic optimization representing informationally limited agents (Bostrom 2014, "Racing to the Precipice"):
+- Agents observe only own state (Kᵢ, Sᵢ, T)
+- No knowledge of others' payoffs or strategies
+- No lookahead - instantaneous payoff gradient maximization
+- Simulates agents who know their utility function but can't predict future states
+
+## Diagnostics and Payoffs
+
+### Safety Debt
+Diagnostic metric (not fed back into dynamics when λ=0):
 ```
-hazard = base_hazard * (C_eff^hazard_cap_elastic) / (1 + aS + S)^hazard_safety_elastic
+Dᵢ = max(0, Kᵢ - θ * Sᵢ)
 ```
-- Reduced by factor `hazard_verif_factor` when global verification level is high
-- Systemic incident probability: `1 - exp(-sum(hazards))`
+Represents capability "overhang" relative to safety preparation.
 
-### Resource Scarcity Pricing
-Price increases convexly as R depletes:
+### Payoff Structure
+Each bloc's utility function:
 ```
-price = p0 * (R0 / R)^eta
+Uᵢ = Kᵢ - λ * Dᵢ + ω * T
 ```
-where `eta > 1` creates convex scarcity.
 
----
+| Term | Coefficient | Interpretation |
+|------|-------------|----------------|
+| Kᵢ | 1 | Direct benefit from capability |
+| Dᵢ | λ | Cost of safety debt (λ=0: ignore, λ>1: danger exceeds capability benefit) |
+| T | ω | Direct value of trust/cooperation |
 
-## Decision Methods
-
-Two action selection methods available:
-
-### 1. Myopic Joint Search (default: disabled)
-Evaluates a grid of candidate actions, selects the combination maximizing sum of all blocs' payoffs (utilitarian). Fast but assumes symmetric actions across blocs.
-
-### 2. Iterative Best Response (default: enabled)
-Each bloc sequentially optimizes their action given others' current actions. Repeats until convergence or max iterations. Captures strategic interaction better.
-
-Set via `use_iterative_br` flag in `main()` (line 530).
-
----
-
-## Payoff Structure
-
-Each bloc's instantaneous payoff includes:
-
-| Term | Weight | Description |
-|------|--------|-------------|
-| First-mover advantage | `beta_first_mover` | Probability of leading (softmax over C_eff * aX) |
-| Risk cost | `kappa_risk_cost` | Systemic incident probability |
-| Resource cost | price * usage | Scarcity-driven cost of compute |
-| Grid stress penalty | 0.05 | Domestic energy bottleneck |
-| Spillover benefit | `sigma_spill_payoff` | Gains from others' safety via verification |
-
----
+When λ=0, agents ignore safety debt in decision-making (not in diagnostics).
 
 ## Parameters
 
-Key parameters in `Params` dataclass:
+`Params` dataclass fields:
 
-**Temporal:**
-- `dt = 0.25`: Decision interval (years)
-- `T = 10.0`: Simulation horizon (years)
+**Capability dynamics:**
+- `alpha`: Capability growth rate per acceleration effort
+- `K_threshold`: Capability level triggering recursive self-improvement (e.g., 14.5)
+- `beta_dim`: Diminishing returns strength in phase 1 (higher = stronger diminishing returns)
+- `transition_width`: Smooth transition zone width between phases
 
-**Depreciation rates:**
-- `delta_K = 0.08`: Capital obsolescence
-- `delta_E = 0.03`: Energy capacity retirement
-- `delta_S = 0.04`: Safety knowledge decay
-- `delta_T = 0.05`: Trust decay
-- `delta_R = 0.02`: Resource depletion
+**Safety dynamics:**
+- `gamma`: Safety growth rate per safety effort, bloc-specific array [US, CN, EU] (e.g., [0.15, 0.025, 0.10])
+- `eta`: Spillover strength from other blocs' safety via trust
+- `theta`: Safety effectiveness at offsetting capability in debt metric
 
-**Productivity:**
-- `inv_scale_K = 1.5`: Capital investment efficiency
-- `inv_scale_S = 0.9`: Safety investment efficiency
-- `build_E_scale = 0.8`: Energy buildout rate
-- `efficiency_growth = 0.25`: Annual compute efficiency gain
+**Trust dynamics:**
+- `beta`: Trust formation rate from verification effort
+- `delta_T`: Trust decay rate
 
-**Scarcity:**
-- `R0 = 100.0`: Initial resource stock
-- `eta = 1.2`: Price-scarcity curvature
-- `rho_base = 4.0`: Base replenishment rate
-- `coop_build_bonus = 0.8`: Cooperation bonus to replenishment
-
-**Safety:**
-- `phi_spill = 0.12`: Spillover strength via verification
-- `base_hazard = 0.02`: Baseline incident hazard
-- `hazard_cap_elastic = 0.7`: Hazard scaling with compute
-- `hazard_safety_elastic = 1.0`: Hazard reduction from safety
-
-**Politics:**
-- `psi_success = 0.15`: Political gain from progress
-- `psi_incident = 0.6`: Political cost of incidents
-- `psi_grid_stress = 0.35`: Political cost of grid stress
-
-**Payoffs:**
-- `beta_first_mover = 2.0`: First-mover value
-- `kappa_risk_cost = 3.0`: Risk aversion
-- `sigma_spill_payoff = 0.8`: Spillover benefit scaling
-
-**Decision grids:**
-- `grid_aS = 5`: Safety action resolution
-- `grid_aX = 5`: Acceleration action resolution
-- `grid_aV = 2`: Verification action resolution (binary)
-
----
+**Payoff parameters:**
+- `lam` (λ): Weight on safety debt in utility (0=ignore, >1=danger exceeds benefit)
+- `omega` (ω): Direct value of trust/cooperation in utility
 
 ## Initial Conditions
 
-Default initialization (`default_initial_state`):
+State vector y0 = [K_US, K_CN, K_EU, S_US, S_CN, S_EU, T]
 
-| Bloc | K | E | S | T | P |
-|------|---|---|---|---|---|
-| US   | 12.0 | 10.0 | 2.0 | 0.8 | 1.5 |
-| CN   | 9.0 | 8.0 | 1.2 | 0.4 | 1.2 |
-| EU   | 7.0 | 7.0 | 1.5 | 0.9 | 1.1 |
+Example (hardcoded in CST.py, lines 681-694):
+- K0 normalized relative to US: [1.0, 0.03, 0.0036] (representing Grok 4, Qwen 3 Max, Mistral Large 2)
+- S0: [0.2, 0.12, 0.15]
+- T0: 0.1
 
-Global resource: R = 100.0
-
----
+Can also load from JSON calibration file (`calibration_from_real_data.json`) with real compute estimates.
 
 ## Outputs
 
-The simulation produces:
-
-**NumPy arrays:**
-- `times.npy`: Time points (length N+1)
-- `states.npy`: State matrix (N+1 × 16) = [K₁ K₂ K₃ E₁ E₂ E₃ S₁ S₂ S₃ T₁ T₂ T₃ P₁ P₂ P₃ R]
-- `actions.npy`: Action tensor (N × 3 × 3) = [steps, blocs, actions]
-
 **Plots in `plots/` directory:**
-- `fig_compute.png`: Effective compute capacity over time
-- `fig_resource.png`: Global resource stock R
-- `fig_aS.png`: Safety effort by bloc
-- `fig_aV.png`: Verification effort by bloc
-- `fig_aX.png`: Acceleration effort by bloc
+- `CST_<policy_mode>.png`: State trajectories (K, S, T, debt)
+- `CST_actions_<policy_mode>.png`: Action trajectories (aX, aS, aV)
+
+**Console output:**
+- Final state values
+- Final actions
+- Action budget verification (sum should equal 1.0)
 
 ---
 
@@ -214,55 +181,58 @@ The simulation produces:
 pip install numpy scipy matplotlib
 ```
 
-2. Run the simulation:
+2. Run simulation:
 ```powershell
-python ai_race_sim.py
+python CST.py
 ```
 
-3. Modify parameters in the `Params` dataclass (lines 33-95) or initial conditions in `default_initial_state()` (lines 443-451).
+3. Configure:
+   - Set `use_calibration_file = True/False` (line 648) to load JSON parameters or use hardcoded values
+   - Set `policy_mode = "best_response" / "bostrom_minimal" / "scenario"` (lines 702-703)
+   - Modify `Params` fields (lines 664-675) or simulation horizon `tf` (line 697)
 
----
+4. Best response options (lines 705-728):
+   - `action_grid`: Discretization fineness (e.g., [0.0, 0.1, ..., 1.0])
+   - `use_lookahead`: Strategic forward simulation vs single-step payoff
+   - `lookahead_years`: Planning horizon (e.g., 1-2 years)
+   - `discount_rate`: Exponential discount for future payoffs
+   - `phase1_only_lookahead`: Simulate agents ignoring exponential growth in projections
 
 ## Implementation Notes
 
-- **ODE integration:** `solve_ivp` with RK45, adaptive stepping
-- **Action selection:** Grid search over discretized action space
-- **Convergence:** Iterative best-response uses max change < 1e-4 tolerance
-- **Numerical stability:** All stocks bounded below by small positive values to avoid singularities
-- **Efficiency trend:** Exponential growth `exp(0.25 * t)` represents Moore's Law / algorithmic progress
+- **ODE integration:** `solve_ivp` with RK45 (default), adaptive stepping, rtol=1e-6, atol=1e-8
+- **Action selection:** Discrete grid search with budget constraint aX + aS + aV = 1
+- **Nash convergence:** Randomized player ordering + warm start caching for stability
+- **Smooth phase transition:** tanh blending avoids discontinuities at K_threshold
+- **State unpacking:** Flat array y → State(K, S, T) for readability
 
----
+## Key Assumptions
 
-## Limitations and Future Extensions
+1. **No depreciation/decay:** K and S accumulate indefinitely (only T decays)
+2. **Deterministic dynamics:** No stochastic shocks or incidents
+3. **Symmetric structure:** All blocs use same dynamics (asymmetry only in γ and initial conditions)
+4. **Budget constraint:** Enforced in best-response/Bostrom policies, not in scenario policy
+5. **Global trust:** Single scalar T (not bilateral trust matrix)
+6. **Threshold uncertainty:** Optional `phase1_only_lookahead` simulates agents not knowing when exponential growth begins
+7. **Continuous actions:** Policy evaluated at each ODE step (not discrete decision points)
 
-**Current simplifications:**
-- Deterministic dynamics (no stochastic incidents)
-- Quarterly discrete decisions (could use continuous control)
-- Grid search for actions (could use optimization or RL)
-- Symmetric bloc structure (identical dynamics, different parameters only via initial conditions)
-- No explicit AGI threshold or absorbing states
+## Limitations and Extensions
+
+**Current scope:**
+- 3-player symmetric game
+- Continuous-time approximation (no explicit timesteps in dynamics)
+- No resource constraints, energy bottlenecks, or political feasibility limits
+- Safety debt is diagnostic only unless λ > 0
 
 **Possible extensions:**
-- Poisson incident process with permanent consequences
-- Asymmetric bloc capabilities and objectives
-- Export controls or alliance formation
-- Multi-stage game with commitment mechanisms
-- Calibration to empirical data (AI Index, compute costs, energy usage)
+- Stochastic capability breakthroughs or safety failures
+- Asymmetric bloc objectives and constraint sets
+- Multi-stage commitment mechanisms or treaties
+- Calibration to historical AI progress data
+- Absorbing states (AGI threshold reached, catastrophic failure)
 
----
 
-## Conceptual Background
-
-Inspired by Nick Bostrom's "Racing to the Precipice" framing, this model captures:
-- Competitive pressure to accelerate (first-mover advantage)
-- Safety as a public good with spillovers
-- Resource constraints creating interdependence
-- Political feasibility constraints on investment
-
-The hybrid discrete-continuous structure allows game-theoretic action selection while preserving smooth stock dynamics.
-
----
 
 ## License
 
-Apache 2.0 – freely reusable for research and educational purposes.
+Apache 2.0
