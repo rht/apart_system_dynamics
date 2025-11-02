@@ -245,11 +245,12 @@ def simulate(
     return sol
 
 
-def plot_results(t_eval, K_path):
+def plot_results(t_eval, K_path, params):
     plt.figure(figsize=(10, 6))
     plt.plot(t_eval, K_path[US], label="US K")
     plt.plot(t_eval, K_path[CN], label="CN K")
     plt.plot(t_eval, K_path[EU], label="EU K")
+    plt.axhline(params.K_threshold, label="K threshold")
     plt.xlabel("Time")
     plt.ylabel("Capability (K)")
     plt.title("Capability Evolution")
@@ -528,6 +529,7 @@ if __name__ == "__main__":
     if use_calibration_file:
         print(f"Loading parameters and initial conditions from {calibration_file}...")
         params, y0 = load_calibration_from_json(calibration_file)
+        params.K_threshold = 10
     else:
         print("Using hardcoded parameters and initial conditions...")
         # --- Define parameters
@@ -632,6 +634,6 @@ if __name__ == "__main__":
 
     # --- Plot results
     print("\nGenerating plots...")
-    plot_results(t_eval, K_path)
+    plot_results(t_eval, K_path, params)
     plot_actions(t_eval, aX_path, aS_path, aV_path)
     print("Done!")
