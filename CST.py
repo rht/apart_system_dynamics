@@ -21,8 +21,8 @@ class Params:
     # Capability growth efficiency
     alpha: float  # dK/dt contribution from acceleration effort
 
-    # Safety growth efficiency
-    gamma: float  # dS/dt contribution from safety effort
+    # Safety growth efficiency (bloc-dependent: [US, CN, EU])
+    gamma: np.ndarray  # dS/dt contribution from safety effort
 
     # Spillover strength for safety via trust
     eta: float  # multiplier on T * avg_other_S
@@ -43,7 +43,7 @@ class Params:
     lam: float = 0.5  # lambda=0 means they ignore debt when choosing actions
 
     # Direct value of trust/cooperation in payoff
-    omega: float = 1.5  # weight on trust benefit in utility function
+    omega: float = 1.1  # weight on trust benefit in utility function
 
 
 @dataclass
@@ -209,12 +209,12 @@ def rhs_ode(
     dS = np.zeros(N_PLAYERS)
 
     # --- Safety dynamics
-    # dS_i/dt = gamma * aS_i + eta * T * avg_other_S_i
+    # dS_i/dt = gamma[i] * aS_i + eta * T * avg_other_S_i
     S_sum = np.sum(st.S)
     for i in range(N_PLAYERS):
         avg_other_S = (S_sum - st.S[i]) / (N_PLAYERS - 1)
         spillover = params.eta * st.T * avg_other_S
-        dS[i] = params.gamma * ctrl.aS[i] + spillover
+        dS[i] = params.gamma[i] * ctrl.aS[i] + spillover
 
     # --- Trust dynamics
     # dT/dt = beta * mean(aV_i) - delta_T * T
@@ -307,7 +307,7 @@ def compute_next_state_single_step(
     for i in range(N_PLAYERS):
         avg_other_S = (S_sum - state.S[i]) / (N_PLAYERS - 1)
         spillover = params.eta * state.T * avg_other_S
-        dS[i] = params.gamma * controls.aS[i] + spillover
+        dS[i] = params.gamma[i] * controls.aS[i] + spillover
 
     # Trust dynamics
     mean_aV = np.mean(controls.aV)
@@ -520,7 +520,7 @@ def bostrom_minimal_info_policy_builder(
                         dK_i = compute_capability_derivatives(state.K, aX_temp, params)[bloc_i]
 
                         # Safety gain rate (ignoring spillover for minimal info)
-                        dS_i = params.gamma * aS_i
+                        dS_i = params.gamma[bloc_i] * aS_i
 
                         # Trust gain rate (assuming others' aV stays at current mean)
                         # Under minimal info, agent doesn't know others' future actions,
@@ -540,8 +540,8 @@ def bostrom_minimal_info_policy_builder(
 
                         payoff_rate = dK_i - params.lam * ddebti_dt + params.omega * dT
 
-                        if payoff_rate > best_payoff:
-                            best_payoff = payoff_rate
+                        if float(payoff_rate) > best_payoff:
+                            best_payoff = float(payoff_rate)
                             best_actions = (aX_i, aS_i, aV_i)
 
             aX[bloc_i], aS[bloc_i], aV[bloc_i] = best_actions
@@ -655,13 +655,15 @@ if __name__ == "__main__":
         # params.delta_T = 0  # no trust decay
         # > 1 so that we have the effect of AI danger exceeds the benefit when
         # exponential growth starts to kick in
-        # params.lam = 1.2
+        params.lam = 1.1
+        # safety growth rate per safety effort [US, CN, EU]
+        params.gamma = np.array([0.15, 0.025, 0.10])  
     else:
         print("Using hardcoded parameters and initial conditions...")
         # --- Define parameters
         params = Params(
             alpha=1.0,  # capability growth rate per accel effort
-            gamma=0.5,  # safety growth rate per safety effort
+            gamma=np.array([0.15, 0.025, 0.10]),  # safety growth rate per safety effort [US, CN, EU]
             eta=0.2,  # spillover strength (trust -> shared safety)
             beta=0.3,  # trust build rate from verification effort
             delta_T=0.1,  # trust decay
