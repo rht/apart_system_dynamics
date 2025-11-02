@@ -5,7 +5,7 @@ import numpy as np
 
 US, CN, EU = 0, 1, 2  # useful named indices
 
-def plot_results(t_eval, K_path, params):
+def plot_results(t_eval, K_path, params, suffix=""):
     plt.figure(figsize=(10, 6))
     plt.plot(t_eval, K_path[US], label="US K")
     plt.plot(t_eval, K_path[CN], label="CN K")
@@ -16,14 +16,14 @@ def plot_results(t_eval, K_path, params):
     plt.yscale("log")
     plt.xlabel("Time")
     plt.ylabel("Capability (K)")
-    plt.title("Capability Evolution")
+    plt.title(f"Capability Evolution ({suffix})")
     plt.legend()
     plt.grid(True, alpha=0.3)
-    plt.savefig("plots/CST.png")
+    plt.savefig(f"plots/CST_main_{suffix}.png")
     plt.close()
 
 
-def plot_actions(t_eval, aX_path, aS_path, aV_path):
+def plot_actions(t_eval, aX_path, aS_path, aV_path, suffix=""):
     """
     Plot actions over time using step plots.
     """
@@ -58,10 +58,12 @@ def plot_actions(t_eval, aX_path, aS_path, aV_path):
     axes[2].grid(True, alpha=0.3)
     axes[2].set_ylim([-0.05, 1.05])
 
+    plt.suptitle(suffix)
     plt.tight_layout()
-    plt.savefig("plots/CST_actions.png", dpi=150)
+    fname = f"plots/CST_actions_{suffix}.png"
+    plt.savefig(fname, dpi=150)
     plt.close()
-    print("Saved action plot to plots/CST_actions.png")
+    print(f"Saved action plot to {fname}")
 
 
 def load_calibration_from_json(json_path, Params):

@@ -424,6 +424,104 @@ def best_response_for_bloc(
     return best_actions
 
 
+def bostrom_minimal_info_policy_builder(
+    params: Params,
+    budget_constraint: bool = True,
+    action_grid: list = None,
+) -> Callable[[float, np.ndarray], Controls]:
+    """
+    Returns a policy function implementing Bostrom's "minimal information" scenario
+    from "Racing to the Precipice" (Bostrom, 2014).
+
+    Key features:
+    - Agents only observe their own current state (K_i, S_i, T)
+    - No knowledge of other agents' payoffs or strategies
+    - No lookahead - only instantaneous/myopic optimization
+    - Agents maximize immediate payoff gradient without modeling future consequences
+
+    This represents the most informationally limited rational agents - they know
+    their own utility function but can't predict others' actions or their own
+    future states.
+    """
+    if action_grid is None:
+        action_grid = [0.0, 0.25, 0.5, 0.75, 1.0]
+
+    def policy_fn(t: float, y: np.ndarray) -> Controls:
+        state = unpack_state(y)
+
+        # Each bloc independently optimizes based only on current state
+        aX = np.zeros(N_PLAYERS)
+        aS = np.zeros(N_PLAYERS)
+        aV = np.zeros(N_PLAYERS)
+
+        for bloc_i in range(N_PLAYERS):
+            best_payoff = -np.inf
+            best_actions = (0.5, 0.3, 0.2)
+
+            # Grid search over own actions only (no modeling of others)
+            for aX_i in action_grid:
+                for aS_i in action_grid:
+                    for aV_i in action_grid:
+                        # Check budget constraint
+                        if budget_constraint and (not math.isclose(aX_i + aS_i + aV_i, 1.0)):
+                            continue
+
+                        # Compute instantaneous payoff at current state
+                        # (not future state - myopic optimization)
+                        # We evaluate how good this action would be RIGHT NOW
+
+                        # Current payoff (baseline)
+                        current_payoff = compute_payoff(bloc_i, state, params)
+
+                        # Estimate instantaneous payoff gradient:
+                        # How much does my payoff increase if I take this action
+                        # for one instant, given current state?
+
+                        # For myopic agents, we care about immediate changes:
+                        # - aX_i increases K_i immediately
+                        # - aS_i decreases debt_i immediately
+                        # - aV_i increases T immediately (through mean_aV)
+
+                        # Marginal utility from each action:
+                        # dU/dt = dK_i/dt * (1 - lam * d(debt)/dK) + omega * dT/dt
+
+                        # Capability gain rate
+                        aX_temp = np.zeros(N_PLAYERS)
+                        aX_temp[bloc_i] = aX_i
+                        dK_i = compute_capability_derivatives(state.K, aX_temp, params)[bloc_i]
+
+                        # Safety gain rate (ignoring spillover for minimal info)
+                        dS_i = params.gamma * aS_i
+
+                        # Trust gain rate (assuming others' aV stays at current mean)
+                        # Under minimal info, agent doesn't know others' future actions,
+                        # so assumes they continue current behavior
+                        dT = params.beta * (aV_i / N_PLAYERS) - params.delta_T * state.T
+
+                        # Instantaneous payoff rate:
+                        # dU_i/dt = dK_i/dt - lam * d(debt_i)/dt + omega * dT/dt
+                        # where d(debt_i)/dt = dK_i/dt - theta * dS_i/dt
+
+                        ddebti_dt = dK_i - params.theta * dS_i
+                        # Only count debt derivative if currently in debt
+                        if state.K[bloc_i] > params.theta * state.S[bloc_i]:
+                            ddebti_dt = max(0, ddebti_dt)
+                        else:
+                            ddebti_dt = 0
+
+                        payoff_rate = dK_i - params.lam * ddebti_dt + params.omega * dT
+
+                        if payoff_rate > best_payoff:
+                            best_payoff = payoff_rate
+                            best_actions = (aX_i, aS_i, aV_i)
+
+            aX[bloc_i], aS[bloc_i], aV[bloc_i] = best_actions
+
+        return Controls(aX=aX, aS=aS, aV=aV)
+
+    return policy_fn
+
+
 def best_response_policy_builder(
     params: Params,
     dt: float = 0.1,
@@ -562,9 +660,11 @@ if __name__ == "__main__":
     t_eval = np.linspace(t0, tf, 101)  # Fewer points for faster computation
 
     # --- Choose policy
-    use_best_response = True  # Set to False to use simple scenario policy
+    # Options: "best_response", "bostrom_minimal", "scenario"
+    policy_mode = "best_response"  
+    # policy_mode = "bostrom_minimal"
 
-    if use_best_response:
+    if policy_mode == "best_response":
         print("Using best response policy (approximate Nash equilibrium)...")
         # Finer action grid for smoother trajectories (10 values: 0.0, 0.1, 0.2, ..., 0.9, 1.0)
         action_grid = [i * 0.1 for i in range(11)]
@@ -580,7 +680,16 @@ if __name__ == "__main__":
             lookahead_years=1.0,
             discount_rate=0.1,
         )
-    else:
+    elif policy_mode == "bostrom_minimal":
+        print("Using Bostrom minimal information policy (myopic optimization)...")
+        print("Agents have no lookahead and no knowledge of others' payoffs")
+        action_grid = [i * 0.1 for i in range(11)]  # Finer grid for smoother actions
+        policy_fn = bostrom_minimal_info_policy_builder(
+            params=params,
+            budget_constraint=True,  # Enforce aX + aS + aV = 1
+            action_grid=action_grid,
+        )
+    else:  # "scenario"
         print("Using fixed scenario policy...")
         mode = "arms_race"
         policy_fn = simple_scenario_policy_builder(mode=mode)
@@ -639,6 +748,6 @@ if __name__ == "__main__":
 
     # --- Plot results
     print("\nGenerating plots...")
-    plot_results(t_eval, K_path, params)
-    plot_actions(t_eval, aX_path, aS_path, aV_path)
+    plot_results(t_eval, K_path, params, suffix=policy_mode)
+    plot_actions(t_eval, aX_path, aS_path, aV_path, suffix=policy_mode)
     print("Done!")
