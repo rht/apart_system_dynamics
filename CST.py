@@ -651,12 +651,11 @@ if __name__ == "__main__":
     if use_calibration_file:
         print(f"Loading parameters and initial conditions from {calibration_file}...")
         params, y0 = load_calibration_from_json(calibration_file, Params)
-        params.K_threshold = 14.0
+        params.K_threshold = 14.5
         # params.delta_T = 0  # no trust decay
         # > 1 so that we have the effect of AI danger exceeds the benefit when
         # exponential growth starts to kick in
-        params.lam = 1.2
-        params.beta = 0.2
+        # params.lam = 1.2
     else:
         print("Using hardcoded parameters and initial conditions...")
         # --- Define parameters
@@ -698,8 +697,8 @@ if __name__ == "__main__":
 
     # --- Choose policy
     # Options: "best_response", "bostrom_minimal", "scenario"
-    policy_mode = "best_response"  
-    # policy_mode = "bostrom_minimal"
+    policy_mode = "best_response"
+    policy_mode = "bostrom_minimal"
 
     if policy_mode == "best_response":
         print("Using best response policy (approximate Nash equilibrium)...")
@@ -710,7 +709,7 @@ if __name__ == "__main__":
 
         # Set to True to make agents ignore exponential growth in their lookahead
         # This simulates uncertainty about when the threshold will be reached
-        phase1_only_lookahead = True
+        phase1_only_lookahead = False
         if phase1_only_lookahead:
             print("Phase 1 only lookahead: Agents below threshold ignore exponential growth in projections")
 
