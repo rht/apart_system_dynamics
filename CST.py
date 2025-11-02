@@ -25,18 +25,19 @@ class Params:
     gamma: float  # dS/dt contribution from safety effort
 
     # Spillover strength for safety via trust
-    eta: float    # multiplier on T * avg_other_S
+    eta: float  # multiplier on T * avg_other_S
 
     # Trust formation / decay
-    beta: float      # how fast joint verification effort builds trust
-    delta_T: float   # trust decay rate
+    beta: float  # how fast joint verification effort builds trust
+    delta_T: float  # trust decay rate
 
     # Safety effectiveness for diagnostic debt
     theta: float  # how much safety cancels capability in the debt metric
 
     # Two-phase capability growth (recursive self-improvement)
     K_threshold: float  # capability level where recursive self-improvement kicks in
-    beta_dim: float     # diminishing returns strength before threshold (higher = more diminishing)
+    beta_dim: float  # diminishing returns strength before threshold (higher = more diminishing)
+    transition_width: float  # width of smooth transition zone (superhuman coder → superhuman AI researcher)
 
     # Do agents *care* about debt in their payoff? (kept for future)
     lam: float = 0.5  # lambda=0 means they ignore debt when choosing actions
@@ -50,7 +51,7 @@ class State:
     # T    = global trust/verification stock
     K: np.ndarray  # shape (3,)
     S: np.ndarray  # shape (3,)
-    T: float       # scalar
+    T: float  # scalar
 
 
 @dataclass
@@ -88,7 +89,7 @@ def unpack_state(y: np.ndarray) -> State:
 
 
 def simple_scenario_policy_builder(
-    mode: str = "arms_race"
+    mode: str = "arms_race",
 ) -> Callable[[float, np.ndarray], Controls]:
     """
     Returns a policy function.
@@ -144,6 +145,42 @@ def simple_scenario_policy_builder(
 # We'll feed this to solve_ivp.
 
 
+def compute_capability_derivatives(
+    K: np.ndarray, aX: np.ndarray, params: Params
+) -> np.ndarray:
+    """
+    Compute dK/dt for all players using smooth two-phase growth.
+
+    Phase 1 (K << K_threshold): Diminishing returns (pre-superhuman coder)
+      dK_i/dt = alpha * aX_i / (1 + beta_dim * K_i)
+    Phase 2 (K >> K_threshold): Recursive self-improvement (superhuman AI researcher)
+      dK_i/dt = alpha * aX_i * K_i
+    Transition: Smooth blend using tanh centered at K_threshold
+      Physically: transition from "superhuman coder" to "superhuman AI researcher"
+
+    Args:
+        K: Capability levels for all players (shape N_PLAYERS)
+        aX: Acceleration efforts for all players (shape N_PLAYERS)
+        params: Model parameters
+
+    Returns:
+        dK: Capability derivatives for all players (shape N_PLAYERS)
+    """
+    dK = np.zeros(N_PLAYERS)
+    for i in range(N_PLAYERS):
+        # Phase 1: diminishing returns
+        phase1 = params.alpha * aX[i] / (1.0 + params.beta_dim * K[i])
+        # Phase 2: exponential (recursive self-improvement)
+        phase2 = params.alpha * aX[i] * K[i]
+        # Smooth weight: 0 at K << K_threshold, 1 at K >> K_threshold
+        weight = 0.5 * (
+            1.0 + np.tanh((K[i] - params.K_threshold) / params.transition_width)
+        )
+        # Blend the two phases
+        dK[i] = (1.0 - weight) * phase1 + weight * phase2
+    return dK
+
+
 def rhs_ode(
     t: float,
     y: np.ndarray,
@@ -156,23 +193,10 @@ def rhs_ode(
     st = unpack_state(y)
     ctrl = policy_fn(t, y)
 
-    dK = np.zeros(N_PLAYERS)
-    dS = np.zeros(N_PLAYERS)
+    # --- Capability dynamics
+    dK = compute_capability_derivatives(st.K, ctrl.aX, params)
 
-    # --- Capability dynamics (two-phase growth)
-    # Phase 1 (K < K_threshold): Diminishing returns
-    #   dK_i/dt = alpha * aX_i / (1 + beta_dim * K_i)
-    # Phase 2 (K >= K_threshold): Recursive self-improvement (compounding)
-    #   dK_i/dt = alpha * aX_i * K_i / (K_threshold * (1 + beta_dim * K_threshold))
-    # The scaling factor in Phase 2 ensures continuity at K = K_threshold
-    for i in range(N_PLAYERS):
-        if st.K[i] < params.K_threshold:
-            # Diminishing returns phase
-            dK[i] = params.alpha * ctrl.aX[i] / (1.0 + params.beta_dim * st.K[i])
-        else:
-            # Recursive self-improvement phase (exponential growth, scaled for continuity)
-            scale_factor = 1.0 / (params.K_threshold * (1.0 + params.beta_dim * params.K_threshold))
-            dK[i] = params.alpha * ctrl.aX[i] * st.K[i] * scale_factor
+    dS = np.zeros(N_PLAYERS)
 
     # --- Safety dynamics
     # dS_i/dt = gamma * aS_i + eta * T * avg_other_S_i
@@ -250,7 +274,10 @@ def plot_results(t_eval, K_path, params):
     plt.plot(t_eval, K_path[US], label="US K")
     plt.plot(t_eval, K_path[CN], label="CN K")
     plt.plot(t_eval, K_path[EU], label="EU K")
-    plt.axhline(params.K_threshold, label="K threshold")
+    plt.axhline(
+        params.K_threshold, label="K threshold", color="black", linestyle="dashed"
+    )
+    plt.yscale("log")
     plt.xlabel("Time")
     plt.ylabel("Capability (K)")
     plt.title("Capability Evolution")
@@ -267,9 +294,9 @@ def plot_actions(t_eval, aX_path, aS_path, aV_path):
     fig, axes = plt.subplots(3, 1, figsize=(12, 10))
 
     # Plot aX (acceleration)
-    axes[0].step(t_eval, aX_path[US], label="US", where='post', linewidth=2)
-    axes[0].step(t_eval, aX_path[CN], label="CN", where='post', linewidth=2)
-    axes[0].step(t_eval, aX_path[EU], label="EU", where='post', linewidth=2)
+    axes[0].step(t_eval, aX_path[US], label="US", where="post", linewidth=2)
+    axes[0].step(t_eval, aX_path[CN], label="CN", where="post", linewidth=2)
+    axes[0].step(t_eval, aX_path[EU], label="EU", where="post", linewidth=2)
     axes[0].set_ylabel("Acceleration Effort (aX)")
     axes[0].set_title("Action Evolution Over Time")
     axes[0].legend()
@@ -277,18 +304,18 @@ def plot_actions(t_eval, aX_path, aS_path, aV_path):
     axes[0].set_ylim([-0.05, 1.05])
 
     # Plot aS (safety)
-    axes[1].step(t_eval, aS_path[US], label="US", where='post', linewidth=2)
-    axes[1].step(t_eval, aS_path[CN], label="CN", where='post', linewidth=2)
-    axes[1].step(t_eval, aS_path[EU], label="EU", where='post', linewidth=2)
+    axes[1].step(t_eval, aS_path[US], label="US", where="post", linewidth=2)
+    axes[1].step(t_eval, aS_path[CN], label="CN", where="post", linewidth=2)
+    axes[1].step(t_eval, aS_path[EU], label="EU", where="post", linewidth=2)
     axes[1].set_ylabel("Safety Effort (aS)")
     axes[1].legend()
     axes[1].grid(True, alpha=0.3)
     axes[1].set_ylim([-0.05, 1.05])
 
     # Plot aV (verification)
-    axes[2].step(t_eval, aV_path[US], label="US", where='post', linewidth=2)
-    axes[2].step(t_eval, aV_path[CN], label="CN", where='post', linewidth=2)
-    axes[2].step(t_eval, aV_path[EU], label="EU", where='post', linewidth=2)
+    axes[2].step(t_eval, aV_path[US], label="US", where="post", linewidth=2)
+    axes[2].step(t_eval, aV_path[CN], label="CN", where="post", linewidth=2)
+    axes[2].step(t_eval, aV_path[EU], label="EU", where="post", linewidth=2)
     axes[2].set_xlabel("Time")
     axes[2].set_ylabel("Verification Effort (aV)")
     axes[2].legend()
@@ -311,33 +338,36 @@ def load_calibration_from_json(json_path: str) -> tuple[Params, np.ndarray]:
     Returns:
         tuple of (Params, y0) where y0 is the initial state vector
     """
-    with open(json_path, 'r') as f:
+    with open(json_path, "r") as f:
         data = json.load(f)
 
     # Load parameters
-    params_dict = data['params']
+    params_dict = data["params"]
     params = Params(
-        alpha=params_dict['alpha'],
-        gamma=params_dict['gamma'],
-        eta=params_dict['eta'],
-        beta=params_dict['beta'],
-        delta_T=params_dict['delta_T'],
-        theta=params_dict['theta'],
-        K_threshold=params_dict['K_threshold'],
-        beta_dim=params_dict['beta_dim'],
-        lam=params_dict['lam'],
+        alpha=params_dict["alpha"],
+        gamma=params_dict["gamma"],
+        eta=params_dict["eta"],
+        beta=params_dict["beta"],
+        delta_T=params_dict["delta_T"],
+        theta=params_dict["theta"],
+        K_threshold=params_dict["K_threshold"],
+        beta_dim=params_dict["beta_dim"],
+        transition_width=params_dict.get(
+            "transition_width", 1.0
+        ),  # default if not in JSON
+        lam=params_dict["lam"],
     )
 
     # Load initial conditions
-    ic = data['initial_conditions']
-    K0 = np.array(ic['K0'])
-    S0 = np.array(ic['S0'])
-    T0 = ic['T0']
+    ic = data["initial_conditions"]
+    K0 = np.array(ic["K0"])
+    S0 = np.array(ic["S0"])
+    T0 = ic["T0"]
     y0 = np.concatenate([K0, S0, [T0]])
 
     # Print metadata if available
-    if 'metadata' in data:
-        meta = data['metadata']
+    if "metadata" in data:
+        meta = data["metadata"]
         print(f"Loaded calibration from: {json_path}")
         print(f"  Calibration date: {meta.get('calibration_date', 'N/A')}")
         print(f"  Target year: {meta.get('target_year', 'N/A')}")
@@ -360,16 +390,10 @@ def compute_next_state_single_step(
     """
     Compute the next state after a small timestep dt using Euler integration.
     """
-    dK = np.zeros(N_PLAYERS)
-    dS = np.zeros(N_PLAYERS)
+    # Capability dynamics
+    dK = compute_capability_derivatives(state.K, controls.aX, params)
 
-    # Capability dynamics (with continuity at threshold)
-    for i in range(N_PLAYERS):
-        if state.K[i] < params.K_threshold:
-            dK[i] = params.alpha * controls.aX[i] / (1.0 + params.beta_dim * state.K[i])
-        else:
-            scale_factor = 1.0 / (params.K_threshold * (1.0 + params.beta_dim * params.K_threshold))
-            dK[i] = params.alpha * controls.aX[i] * state.K[i] * scale_factor
+    dS = np.zeros(N_PLAYERS)
 
     # Safety dynamics
     S_sum = np.sum(state.S)
@@ -469,18 +493,18 @@ def best_response_policy_builder(
     """
     # Cache for previous actions (warm start)
     cache = {
-        'aX': np.array([0.5, 0.5, 0.5]),
-        'aS': np.array([0.3, 0.3, 0.3]),
-        'aV': np.array([0.2, 0.2, 0.2]),
+        "aX": np.array([0.5, 0.5, 0.5]),
+        "aS": np.array([0.3, 0.3, 0.3]),
+        "aV": np.array([0.2, 0.2, 0.2]),
     }
 
     def policy_fn(t: float, y: np.ndarray) -> Controls:
         state = unpack_state(y)
 
         # Initialize with cached actions
-        aX = cache['aX'].copy()
-        aS = cache['aS'].copy()
-        aV = cache['aV'].copy()
+        aX = cache["aX"].copy()
+        aS = cache["aS"].copy()
+        aV = cache["aV"].copy()
 
         # Iterative best response
         for iteration in range(max_iterations):
@@ -499,9 +523,11 @@ def best_response_policy_builder(
                 aV_new[i] = aV_i
 
             # Check convergence
-            change = (np.max(np.abs(aX_new - aX)) +
-                     np.max(np.abs(aS_new - aS)) +
-                     np.max(np.abs(aV_new - aV)))
+            change = (
+                np.max(np.abs(aX_new - aX))
+                + np.max(np.abs(aS_new - aS))
+                + np.max(np.abs(aV_new - aV))
+            )
 
             aX, aS, aV = aX_new, aS_new, aV_new
 
@@ -509,9 +535,9 @@ def best_response_policy_builder(
                 break
 
         # Update cache
-        cache['aX'] = aX.copy()
-        cache['aS'] = aS.copy()
-        cache['aV'] = aV.copy()
+        cache["aX"] = aX.copy()
+        cache["aS"] = aS.copy()
+        cache["aV"] = aV.copy()
 
         return Controls(aX=aX, aS=aS, aV=aV)
 
@@ -529,20 +555,21 @@ if __name__ == "__main__":
     if use_calibration_file:
         print(f"Loading parameters and initial conditions from {calibration_file}...")
         params, y0 = load_calibration_from_json(calibration_file)
-        params.K_threshold = 10
+        params.K_threshold = 14.5
     else:
         print("Using hardcoded parameters and initial conditions...")
         # --- Define parameters
         params = Params(
-            alpha=1.0,       # capability growth rate per accel effort
-            gamma=0.5,       # safety growth rate per safety effort
-            eta=0.2,         # spillover strength (trust -> shared safety)
-            beta=0.3,        # trust build rate from verification effort
-            delta_T=0.1,     # trust decay
-            theta=0.8,       # how effective safety is at offsetting capability
+            alpha=1.0,  # capability growth rate per accel effort
+            gamma=0.5,  # safety growth rate per safety effort
+            eta=0.2,  # spillover strength (trust -> shared safety)
+            beta=0.3,  # trust build rate from verification effort
+            delta_T=0.1,  # trust decay
+            theta=0.8,  # how effective safety is at offsetting capability
             K_threshold=10.0,  # AGI threshold for recursive self-improvement
-            beta_dim=0.3,    # diminishing returns strength (higher = more diminishing)
-            lam=0.5,         # payoff weighting for safety debt (0=ignore, 1=full weight)
+            beta_dim=0.3,  # diminishing returns strength (higher = more diminishing)
+            transition_width=1.5,  # smooth transition zone (superhuman coder → superhuman AI researcher)
+            lam=0.5,  # payoff weighting for safety debt (0=ignore, 1=full weight)
         )
 
         # --- Initial conditions:
@@ -550,13 +577,18 @@ if __name__ == "__main__":
         # and almost no trust.
         # starting capability levels
         K0_US = 5e26  # Grok 4
-        K0 = np.array([
-            K0_US,
-            1.5e25,   # Qwen 3 Max
-            1.8e24, # Mistral Large 2
-        ]) / K0_US
-        S0 = np.array([0.2, 0.12, 0.15])   # starting safety levels
-        T0 = 0.1                         # low verification regime
+        K0 = (
+            np.array(
+                [
+                    K0_US,
+                    1.5e25,  # Qwen 3 Max
+                    1.8e24,  # Mistral Large 2
+                ]
+            )
+            / K0_US
+        )
+        S0 = np.array([0.2, 0.12, 0.15])  # starting safety levels
+        T0 = 0.1  # low verification regime
         y0 = np.concatenate([K0, S0, [T0]])
 
     # --- Time horizon
@@ -591,7 +623,7 @@ if __name__ == "__main__":
     )
 
     # --- Unpack results for convenience
-    K_path = sol.y[0:3, :]   # shape (3, len(t_eval))
+    K_path = sol.y[0:3, :]  # shape (3, len(t_eval))
     S_path = sol.y[3:6, :]
     T_path = sol.y[6, :]
 
