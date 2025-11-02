@@ -521,6 +521,7 @@ if __name__ == "__main__":
         print(f"Loading parameters and initial conditions from {calibration_file}...")
         params, y0 = load_calibration_from_json(calibration_file, Params)
         params.K_threshold = 14.5
+        # params.delta_T = 0  # no trust decay
     else:
         print("Using hardcoded parameters and initial conditions...")
         # --- Define parameters
@@ -568,7 +569,7 @@ if __name__ == "__main__":
         # Finer action grid for smoother trajectories (10 values: 0.0, 0.1, 0.2, ..., 0.9, 1.0)
         action_grid = [i * 0.1 for i in range(11)]
         action_grid = None
-        print("Using 2-year lookahead with exponential discounting (discount rate = 0.2)")
+        print("Using 2-year lookahead with exponential discounting (with discount rate)")
         policy_fn = best_response_policy_builder(
             params=params,
             dt=0.25,

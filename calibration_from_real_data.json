@@ -8,7 +8,7 @@
     "eta": 0.4,
     "beta": 0.3,
     "delta_T": 0.2,
-    "lam": 0.4
+    "lam": 0.8
   },
   "initial_conditions": {
     "K0": [

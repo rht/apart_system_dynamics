@@ -268,7 +268,7 @@ def calibrate_from_real_data(real_data: Dict, target_year: int = 2025) -> Dict:
     print(f"   δ_T (trust decay) = {delta_T:.3f} 🔴 ASSUMED")
     
     # 🔴 HARDCODED: No data on decision-maker safety preferences
-    lam = 0.4  # Safety concern (moderate assumption, could be 0.2-0.8)
+    lam = 0.8  # Safety concern (moderate assumption, could be 0.2-0.8)
     print(f"   λ (safety concern) = {lam:.3f} 🔴 ASSUMED")
     
     print("\n   ⚠️  WARNING: 6 out of 9 parameters are ASSUMPTIONS, not data!")
