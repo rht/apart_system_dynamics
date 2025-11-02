@@ -255,8 +255,8 @@ def simulate(
     params: Params,
     policy_fn: Callable[[float, np.ndarray], Controls],
     t_eval: np.ndarray = None,
-    rtol: float = 1e-6,
-    atol: float = 1e-8,
+    rtol: float = 1e-5,
+    atol: float = 1e-7,
 ):
     """
     Wrapper around solve_ivp.
@@ -640,6 +640,158 @@ def best_response_policy_builder(
     return policy_fn
 
 
+def china_catchup_policy_builder(
+    params: Params,
+    dt: float = 0.1,
+    max_iterations: int = 5,
+    budget_constraint: bool = True,
+    seed: int = 42,
+    action_grid: list = None,
+    use_lookahead: bool = True,
+    lookahead_years: float = 2.0,
+    discount_rate: float = 0.2,
+    phase1_only_lookahead: bool = False,
+    catchup_time_threshold: float = 8.0,
+    catchup_ratio_threshold: float = 0.5,
+    min_china_aX: float = 0.7,
+) -> Callable[[float, np.ndarray], Controls]:
+    """
+    Returns a policy where China prioritizes acceleration to catch up early on,
+    while US and EU play standard best response.
+
+    China's catchup behavior:
+    - If t < catchup_time_threshold OR K_CN < catchup_ratio_threshold * K_US:
+      China commits to high acceleration (aX >= min_china_aX)
+    - Otherwise, China plays standard best response
+
+    Args:
+        catchup_time_threshold: Time before which China prioritizes catchup
+        catchup_ratio_threshold: If K_CN/K_US < this, China prioritizes catchup
+        min_china_aX: Minimum acceleration effort for China during catchup phase
+        (other args same as best_response_policy_builder)
+    """
+    # Cache for previous actions (warm start)
+    cache = {
+        "aX": np.array([0.5, 0.7, 0.5]),  # China starts with higher aX
+        "aS": np.array([0.3, 0.2, 0.3]),
+        "aV": np.array([0.2, 0.1, 0.2]),
+    }
+
+    # Create random number generator with fixed seed for reproducibility
+    rng = np.random.default_rng(seed)
+
+    def policy_fn(t: float, y: np.ndarray) -> Controls:
+        state = unpack_state(y)
+
+        # Initialize with cached actions
+        aX = cache["aX"].copy()
+        aS = cache["aS"].copy()
+        aV = cache["aV"].copy()
+
+        # Check if China should be in catchup mode
+        china_in_catchup = (
+            t < catchup_time_threshold or
+            state.K[CN] < catchup_ratio_threshold * state.K[US]
+        )
+
+        # Iterative best response
+        for iteration in range(max_iterations):
+            aX_new = aX.copy()
+            aS_new = aS.copy()
+            aV_new = aV.copy()
+
+            # Randomize player order to avoid bias and improve Nash convergence
+            player_order = rng.permutation(N_PLAYERS)
+
+            # Each bloc computes best response given others' current actions
+            for i in player_order:
+                if i == CN and china_in_catchup:
+                    # China in catchup mode: search over actions with high aX
+                    current_controls = Controls(aX=aX, aS=aS, aV=aV)
+
+                    # Custom action search for China with minimum aX constraint
+                    if action_grid is None:
+                        catchup_action_grid = [0.0, 0.25, 0.5, 0.75, 1.0]
+                    else:
+                        catchup_action_grid = action_grid
+
+                    best_payoff = -np.inf
+                    best_actions = (min_china_aX, 0.2, 0.1)
+
+                    for aX_i in catchup_action_grid:
+                        if aX_i < min_china_aX:
+                            continue  # Skip low acceleration options
+
+                        for aS_i in catchup_action_grid:
+                            for aV_i in catchup_action_grid:
+                                if budget_constraint and (not math.isclose(aX_i + aS_i + aV_i, 1.0)):
+                                    continue
+
+                                # Create full control vector
+                                aX_full = current_controls.aX.copy()
+                                aS_full = current_controls.aS.copy()
+                                aV_full = current_controls.aV.copy()
+
+                                aX_full[CN] = aX_i
+                                aS_full[CN] = aS_i
+                                aV_full[CN] = aV_i
+
+                                controls = Controls(aX=aX_full, aS=aS_full, aV=aV_full)
+
+                                # Compute payoff
+                                if use_lookahead:
+                                    payoff = compute_lookahead_payoff(
+                                        CN, state, controls, params,
+                                        lookahead_years=lookahead_years,
+                                        discount_rate=discount_rate,
+                                        phase1_only_lookahead=phase1_only_lookahead,
+                                    )
+                                else:
+                                    next_state = compute_next_state_single_step(state, controls, params, dt)
+                                    payoff = compute_payoff(CN, next_state, params)
+
+                                if payoff > best_payoff:
+                                    best_payoff = payoff
+                                    best_actions = (aX_i, aS_i, aV_i)
+
+                    aX_new[CN], aS_new[CN], aV_new[CN] = best_actions
+                else:
+                    # US, EU, or China after catchup: standard best response
+                    current_controls = Controls(aX=aX, aS=aS, aV=aV)
+                    aX_i, aS_i, aV_i = best_response_for_bloc(
+                        i, state, current_controls, params, dt, budget_constraint,
+                        action_grid=action_grid,
+                        use_lookahead=use_lookahead,
+                        lookahead_years=lookahead_years,
+                        discount_rate=discount_rate,
+                        phase1_only_lookahead=phase1_only_lookahead,
+                    )
+                    aX_new[i] = aX_i
+                    aS_new[i] = aS_i
+                    aV_new[i] = aV_i
+
+            # Check convergence
+            change = (
+                np.max(np.abs(aX_new - aX))
+                + np.max(np.abs(aS_new - aS))
+                + np.max(np.abs(aV_new - aV))
+            )
+
+            aX, aS, aV = aX_new, aS_new, aV_new
+
+            if change < 1e-4:
+                break
+
+        # Update cache
+        cache["aX"] = aX.copy()
+        cache["aS"] = aS.copy()
+        cache["aV"] = aV.copy()
+
+        return Controls(aX=aX, aS=aS, aV=aV)
+
+    return policy_fn
+
+
 ###############################################################################
 # 7. Example usage / quick demo
 ###############################################################################
@@ -698,9 +850,10 @@ if __name__ == "__main__":
     t_eval = np.linspace(t0, tf, 101)  # Fewer points for faster computation
 
     # --- Choose policy
-    # Options: "best_response", "bostrom_minimal", "scenario"
+    # Options: "best_response", "china_catchup", "bostrom_minimal", "scenario"
     policy_mode = "best_response"
-    policy_mode = "bostrom_minimal"
+    policy_mode = "china_catchup"
+    # policy_mode = "bostrom_minimal"
 
     if policy_mode == "best_response":
         print("Using best response policy (approximate Nash equilibrium)...")
@@ -725,6 +878,30 @@ if __name__ == "__main__":
             lookahead_years=1,
             discount_rate=0.3,
             phase1_only_lookahead=phase1_only_lookahead,
+        )
+    elif policy_mode == "china_catchup":
+        print("Using China catchup policy (China prioritizes acceleration to catch up)...")
+        action_grid = [i * 0.1 for i in range(11)]
+        action_grid = None
+        print("Using lookahead with exponential discounting (with discount rate)")
+
+        phase1_only_lookahead = False
+        if phase1_only_lookahead:
+            print("Phase 1 only lookahead: Agents below threshold ignore exponential growth in projections")
+
+        policy_fn = china_catchup_policy_builder(
+            params=params,
+            dt=0.25,
+            max_iterations=4,
+            budget_constraint=True,  # Enforce aX + aS + aV = 1
+            action_grid=action_grid,
+            use_lookahead=True,
+            lookahead_years=1,
+            discount_rate=0.3,
+            phase1_only_lookahead=phase1_only_lookahead,
+            catchup_time_threshold=8.0,  # China catchup mode for first 8 years
+            catchup_ratio_threshold=0.5,  # Or until K_CN >= 0.5 * K_US
+            min_china_aX=0.7,  # China commits at least 70% to acceleration during catchup
         )
     elif policy_mode == "bostrom_minimal":
         print("Using Bostrom minimal information policy (myopic optimization)...")

@@ -1,4 +1,4 @@
-# AI Race Simulation: Capability-Safety-Trust (CST) Model
+# System Dynamics Game-Theoretic Model of the AI Development Race
 
 ## Overview
 
@@ -210,7 +210,7 @@ python CST.py
 
 1. **No depreciation/decay:** K and S accumulate indefinitely (only T decays)
 2. **Deterministic dynamics:** No stochastic shocks or incidents
-3. **Symmetric structure:** All blocs use same dynamics (asymmetry only in γ and initial conditions)
+3. **Symmetric structure:** All blocs use same dynamics (asymmetry only in γ, initial conditions, and trust growth rate)
 4. **Budget constraint:** Enforced in best-response/Bostrom policies, not in scenario policy
 5. **Global trust:** Single scalar T (not bilateral trust matrix)
 6. **Threshold uncertainty:** Optional `phase1_only_lookahead` simulates agents not knowing when exponential growth begins
