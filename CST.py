@@ -45,6 +45,9 @@ class Params:
     # Direct value of trust/cooperation in payoff
     omega: float = 1.5  # weight on trust benefit in utility function
 
+    # Relative advantage payoff (racing dynamics)
+    zeta: float = 0.0  # weight on being ahead of competitors (0=absolute payoff, >0=competitive)
+
 
 @dataclass
 class State:
@@ -325,15 +328,30 @@ def compute_payoff(
     bloc_i: int,
     state: State,
     params: Params,
+    include_relative: bool = True,
 ) -> float:
     """
-    Compute payoff for bloc i: U_i = K_i - lam * Debt_i + omega * T
+    Compute payoff for bloc i: U_i = K_i - lam * Debt_i + omega * T + zeta * RelativeAdvantage_i
     where Debt_i = max(0, K_i - theta * S_i)
     and omega * T represents the direct value of trust/cooperation
+    and RelativeAdvantage_i = max(0, K_i - max_j(K_j)) measures being ahead of competitors
+
+    Args:
+        include_relative: If False, ignore relative advantage term (for minimal info agents)
     """
     debt_i = max(0.0, state.K[bloc_i] - params.theta * state.S[bloc_i])
     trust_benefit = params.omega * state.T
-    payoff = state.K[bloc_i] - params.lam * debt_i + trust_benefit
+
+    # Simple linear debt penalty (but lam can be large to make safety important)
+    debt_penalty = params.lam * debt_i
+
+    # Relative advantage: how far ahead am I of the best competitor?
+    relative_advantage = 0.0
+    if include_relative and params.zeta > 0:
+        max_other_K = max(state.K[j] for j in range(N_PLAYERS) if j != bloc_i)
+        relative_advantage = params.zeta * max(0.0, state.K[bloc_i] - max_other_K)
+
+    payoff = state.K[bloc_i] - debt_penalty + trust_benefit + relative_advantage
     return payoff
 
 
@@ -346,6 +364,7 @@ def compute_lookahead_payoff(
     discount_rate: float = 0.2,
     n_steps: int = 5,
     phase1_only_lookahead: bool = False,
+    include_relative: bool = True,
 ) -> float:
     """
     Compute discounted cumulative payoff by simulating forward lookahead_years.
@@ -356,6 +375,7 @@ def compute_lookahead_payoff(
                               use only phase 1 dynamics in lookahead simulation.
                               This simulates agents not knowing when exponential
                               growth will begin.
+        include_relative: If False, ignore relative advantage term (for minimal info agents)
 
     Returns: integral of exp(-discount_rate * t) * payoff(t) dt from 0 to lookahead_years
     """
@@ -369,7 +389,7 @@ def compute_lookahead_payoff(
     for step in range(n_steps):
         t = step * dt
         # Compute instantaneous payoff
-        instant_payoff = compute_payoff(bloc_i, current_state, params)
+        instant_payoff = compute_payoff(bloc_i, current_state, params, include_relative=include_relative)
         # Add discounted payoff
         total_payoff += instant_payoff * np.exp(-discount_rate * t) * dt
         # Step forward
@@ -392,6 +412,7 @@ def best_response_for_bloc(
     lookahead_years: float = 2.0,
     discount_rate: float = 0.2,
     phase1_only_lookahead: bool = False,
+    include_relative: bool = True,
 ) -> tuple[float, float, float]:
     """
     Find best response actions for bloc i, given other blocs' actions.
@@ -405,6 +426,7 @@ def best_response_for_bloc(
         phase1_only_lookahead: If True, agents below K_threshold will use only phase 1
                               dynamics in their lookahead, simulating uncertainty about
                               when exponential growth begins
+        include_relative: If False, ignore relative advantage term (for minimal info agents)
     """
     if action_grid is None:
         # Coarse grid for speed
@@ -440,11 +462,12 @@ def best_response_for_bloc(
                         lookahead_years=lookahead_years,
                         discount_rate=discount_rate,
                         phase1_only_lookahead=phase1_only_lookahead,
+                        include_relative=include_relative,
                     )
                 else:
                     # Original single-step payoff
                     next_state = compute_next_state_single_step(state, controls, params, dt)
-                    payoff = compute_payoff(bloc_i, next_state, params)
+                    payoff = compute_payoff(bloc_i, next_state, params, include_relative=include_relative)
 
                 if payoff > best_payoff:
                     best_payoff = payoff
@@ -467,6 +490,7 @@ def bostrom_minimal_info_policy_builder(
     - No knowledge of other agents' payoffs or strategies
     - No lookahead - only instantaneous/myopic optimization
     - Agents maximize immediate payoff gradient without modeling future consequences
+    - IMPORTANTLY: No relative advantage term (agents don't observe others' K levels)
 
     This represents the most informationally limited rational agents - they know
     their own utility function but can't predict others' actions or their own
@@ -530,6 +554,8 @@ def bostrom_minimal_info_policy_builder(
                         # Instantaneous payoff rate:
                         # dU_i/dt = dK_i/dt - lam * d(debt_i)/dt + omega * dT/dt
                         # where d(debt_i)/dt = dK_i/dt - theta * dS_i/dt
+                        # NOTE: No relative advantage term (zeta) - minimal info agents
+                        # don't observe others' capability levels
 
                         ddebti_dt = dK_i - params.theta * dS_i
                         # Only count debt derivative if currently in debt
@@ -562,6 +588,7 @@ def best_response_policy_builder(
     lookahead_years: float = 2.0,
     discount_rate: float = 0.2,
     phase1_only_lookahead: bool = False,
+    include_relative: bool = True,
 ) -> Callable[[float, np.ndarray], Controls]:
     """
     Returns a best-response policy function that computes Nash equilibrium
@@ -575,6 +602,7 @@ def best_response_policy_builder(
         discount_rate: Discount rate for future payoffs
         phase1_only_lookahead: If True, agents below K_threshold use only phase 1
                               dynamics in lookahead (simulates threshold uncertainty)
+        include_relative: If False, ignore relative advantage term (for minimal info agents)
     """
     # Cache for previous actions (warm start)
     cache = {
@@ -613,6 +641,7 @@ def best_response_policy_builder(
                     lookahead_years=lookahead_years,
                     discount_rate=discount_rate,
                     phase1_only_lookahead=phase1_only_lookahead,
+                    include_relative=include_relative,
                 )
                 aX_new[i] = aX_i
                 aS_new[i] = aS_i
@@ -653,10 +682,14 @@ if __name__ == "__main__":
         params, y0 = load_calibration_from_json(calibration_file, Params)
         params.K_threshold = 14.0
         # params.delta_T = 0  # no trust decay
-        # > 1 so that we have the effect of AI danger exceeds the benefit when
-        # exponential growth starts to kick in
-        params.lam = 1.2
-        params.beta = 0.2
+
+        # Debt penalty: higher lam = agents care more about safety debt
+        # This makes them pivot to safety investment when capability gets high
+        params.lam = 1.2  # Strong safety incentive
+
+        # Set relative advantage weight (0=absolute payoff, >0=competitive racing)
+        # Higher zeta = stronger incentive to be ahead of competitors
+        params.zeta = 2.0  # Bostrom et al. racing dynamics
     else:
         print("Using hardcoded parameters and initial conditions...")
         # --- Define parameters
@@ -699,35 +732,40 @@ if __name__ == "__main__":
     # --- Choose policy
     # Options: "best_response", "bostrom_minimal", "scenario"
     policy_mode = "best_response"  
-    # policy_mode = "bostrom_minimal"
+    policy_mode = "bostrom_minimal"
 
     if policy_mode == "best_response":
         print("Using best response policy (approximate Nash equilibrium)...")
-        # Finer action grid for smoother trajectories (10 values: 0.0, 0.1, 0.2, ..., 0.9, 1.0)
-        action_grid = [i * 0.1 for i in range(11)]
-        action_grid = None
         print("Using lookahead with exponential discounting (with discount rate)")
 
         # Set to True to make agents ignore exponential growth in their lookahead
         # This simulates uncertainty about when the threshold will be reached
-        phase1_only_lookahead = True
+        phase1_only_lookahead = False
         if phase1_only_lookahead:
             print("Phase 1 only lookahead: Agents below threshold ignore exponential growth in projections")
+
+        # Relative advantage: agents care about being ahead of competitors
+        # Set to True for Armstrong-style racing dynamics
+        include_relative = True
+        if include_relative and params.zeta > 0:
+            print(f"Relative advantage enabled: zeta={params.zeta} (agents value being ahead)")
+        print(f"Debt penalty coefficient: lam={params.lam} (safety incentive strength)")
 
         policy_fn = best_response_policy_builder(
             params=params,
             dt=0.25,
             max_iterations=4,  # Reduced for speed
             budget_constraint=True,  # Enforce aX + aS + aV = 1
-            action_grid=action_grid,
             use_lookahead=True,
             lookahead_years=1,
             discount_rate=0.3,
             phase1_only_lookahead=phase1_only_lookahead,
+            include_relative=include_relative,
         )
     elif policy_mode == "bostrom_minimal":
         print("Using Bostrom minimal information policy (myopic optimization)...")
         print("Agents have no lookahead and no knowledge of others' payoffs")
+        print("Note: Relative advantage (zeta) ignored - agents don't observe others' K levels")
         action_grid = [i * 0.1 for i in range(11)]  # Finer grid for smoother actions
         policy_fn = bostrom_minimal_info_policy_builder(
             params=params,
