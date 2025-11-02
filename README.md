@@ -1,4 +1,4 @@
-# AI Race Simulation: Capability-Safety-Trust (CST) Model
+# System Dynamics Game-Theoretic Model of the AI Development Race
 
 ## Overview
 
