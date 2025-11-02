@@ -486,10 +486,14 @@ def best_response_policy_builder(
     dt: float = 0.1,
     max_iterations: int = 5,
     budget_constraint: bool = True,
+    seed: int = 42,
 ) -> Callable[[float, np.ndarray], Controls]:
     """
     Returns a best-response policy function that computes Nash equilibrium
     via iterated best responses.
+
+    Args:
+        seed: Random seed for deterministic player ordering in best response iteration
     """
     # Cache for previous actions (warm start)
     cache = {
@@ -497,6 +501,9 @@ def best_response_policy_builder(
         "aS": np.array([0.3, 0.3, 0.3]),
         "aV": np.array([0.2, 0.2, 0.2]),
     }
+
+    # Create random number generator with fixed seed for reproducibility
+    rng = np.random.default_rng(seed)
 
     def policy_fn(t: float, y: np.ndarray) -> Controls:
         state = unpack_state(y)
@@ -512,8 +519,11 @@ def best_response_policy_builder(
             aS_new = aS.copy()
             aV_new = aV.copy()
 
+            # Randomize player order to avoid bias and improve Nash convergence
+            player_order = rng.permutation(N_PLAYERS)
+
             # Each bloc computes best response given others' current actions
-            for i in range(N_PLAYERS):
+            for i in player_order:
                 current_controls = Controls(aX=aX, aS=aS, aV=aV)
                 aX_i, aS_i, aV_i = best_response_for_bloc(
                     i, state, current_controls, params, dt, budget_constraint
