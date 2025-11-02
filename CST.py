@@ -149,7 +149,7 @@ def simple_scenario_policy_builder(
 
 
 def compute_capability_derivatives(
-    K: np.ndarray, aX: np.ndarray, params: Params
+    K: np.ndarray, aX: np.ndarray, params: Params, force_phase1: bool = False
 ) -> np.ndarray:
     """
     Compute dK/dt for all players using smooth two-phase growth.
@@ -165,6 +165,8 @@ def compute_capability_derivatives(
         K: Capability levels for all players (shape N_PLAYERS)
         aX: Acceleration efforts for all players (shape N_PLAYERS)
         params: Model parameters
+        force_phase1: If True, only use phase 1 (diminishing returns) dynamics,
+                     ignoring the transition to exponential growth
 
     Returns:
         dK: Capability derivatives for all players (shape N_PLAYERS)
@@ -173,14 +175,19 @@ def compute_capability_derivatives(
     for i in range(N_PLAYERS):
         # Phase 1: diminishing returns
         phase1 = params.alpha * aX[i] / (1.0 + params.beta_dim * K[i])
-        # Phase 2: exponential (recursive self-improvement)
-        phase2 = params.alpha * aX[i] * K[i]
-        # Smooth weight: 0 at K << K_threshold, 1 at K >> K_threshold
-        weight = 0.5 * (
-            1.0 + np.tanh((K[i] - params.K_threshold) / params.transition_width)
-        )
-        # Blend the two phases
-        dK[i] = (1.0 - weight) * phase1 + weight * phase2
+
+        if force_phase1:
+            # Only use phase 1 dynamics (simulate uncertainty about threshold)
+            dK[i] = phase1
+        else:
+            # Phase 2: exponential (recursive self-improvement)
+            phase2 = params.alpha * aX[i] * K[i]
+            # Smooth weight: 0 at K << K_threshold, 1 at K >> K_threshold
+            weight = 0.5 * (
+                1.0 + np.tanh((K[i] - params.K_threshold) / params.transition_width)
+            )
+            # Blend the two phases
+            dK[i] = (1.0 - weight) * phase1 + weight * phase2
     return dK
 
 
@@ -282,12 +289,16 @@ def compute_next_state_single_step(
     controls: Controls,
     params: Params,
     dt: float = 0.1,
+    force_phase1: bool = False,
 ) -> State:
     """
     Compute the next state after a small timestep dt using Euler integration.
+
+    Args:
+        force_phase1: If True, only use phase 1 dynamics for capability growth
     """
     # Capability dynamics
-    dK = compute_capability_derivatives(state.K, controls.aX, params)
+    dK = compute_capability_derivatives(state.K, controls.aX, params, force_phase1=force_phase1)
 
     dS = np.zeros(N_PLAYERS)
 
@@ -334,15 +345,25 @@ def compute_lookahead_payoff(
     lookahead_years: float = 2.0,
     discount_rate: float = 0.2,
     n_steps: int = 5,
+    phase1_only_lookahead: bool = False,
 ) -> float:
     """
     Compute discounted cumulative payoff by simulating forward lookahead_years.
     More strategic than single-step payoff.
 
+    Args:
+        phase1_only_lookahead: If True and bloc_i's current K < K_threshold,
+                              use only phase 1 dynamics in lookahead simulation.
+                              This simulates agents not knowing when exponential
+                              growth will begin.
+
     Returns: integral of exp(-discount_rate * t) * payoff(t) dt from 0 to lookahead_years
     """
     dt = lookahead_years / n_steps
     current_state = State(K=state.K.copy(), S=state.S.copy(), T=state.T)
+
+    # Determine if we should force phase 1 dynamics in lookahead
+    force_phase1 = phase1_only_lookahead and (state.K[bloc_i] < params.K_threshold)
 
     total_payoff = 0.0
     for step in range(n_steps):
@@ -352,7 +373,9 @@ def compute_lookahead_payoff(
         # Add discounted payoff
         total_payoff += instant_payoff * np.exp(-discount_rate * t) * dt
         # Step forward
-        current_state = compute_next_state_single_step(current_state, controls, params, dt)
+        current_state = compute_next_state_single_step(
+            current_state, controls, params, dt, force_phase1=force_phase1
+        )
 
     return total_payoff
 
@@ -368,6 +391,7 @@ def best_response_for_bloc(
     use_lookahead: bool = True,
     lookahead_years: float = 2.0,
     discount_rate: float = 0.2,
+    phase1_only_lookahead: bool = False,
 ) -> tuple[float, float, float]:
     """
     Find best response actions for bloc i, given other blocs' actions.
@@ -378,10 +402,14 @@ def best_response_for_bloc(
         use_lookahead: If True, use forward simulation with discounting for strategic behavior
         lookahead_years: How far to simulate forward (typically 2 years)
         discount_rate: Exponential discount rate for future payoffs
+        phase1_only_lookahead: If True, agents below K_threshold will use only phase 1
+                              dynamics in their lookahead, simulating uncertainty about
+                              when exponential growth begins
     """
     if action_grid is None:
-        # Coarse grid for speed: only 5 values per action
+        # Coarse grid for speed
         action_grid = [0.0, 0.25, 0.5, 0.75, 1.0]
+        # action_grid = [i * 0.2 for i in range(6)]
 
     best_payoff = -np.inf
     best_actions = (0.5, 0.3, 0.2)
@@ -411,6 +439,7 @@ def best_response_for_bloc(
                         bloc_i, state, controls, params,
                         lookahead_years=lookahead_years,
                         discount_rate=discount_rate,
+                        phase1_only_lookahead=phase1_only_lookahead,
                     )
                 else:
                     # Original single-step payoff
@@ -532,6 +561,7 @@ def best_response_policy_builder(
     use_lookahead: bool = True,
     lookahead_years: float = 2.0,
     discount_rate: float = 0.2,
+    phase1_only_lookahead: bool = False,
 ) -> Callable[[float, np.ndarray], Controls]:
     """
     Returns a best-response policy function that computes Nash equilibrium
@@ -543,6 +573,8 @@ def best_response_policy_builder(
         use_lookahead: Use forward-looking discounted payoff (more strategic)
         lookahead_years: Horizon for forward simulation
         discount_rate: Discount rate for future payoffs
+        phase1_only_lookahead: If True, agents below K_threshold use only phase 1
+                              dynamics in lookahead (simulates threshold uncertainty)
     """
     # Cache for previous actions (warm start)
     cache = {
@@ -580,6 +612,7 @@ def best_response_policy_builder(
                     use_lookahead=use_lookahead,
                     lookahead_years=lookahead_years,
                     discount_rate=discount_rate,
+                    phase1_only_lookahead=phase1_only_lookahead,
                 )
                 aX_new[i] = aX_i
                 aS_new[i] = aS_i
@@ -618,8 +651,12 @@ if __name__ == "__main__":
     if use_calibration_file:
         print(f"Loading parameters and initial conditions from {calibration_file}...")
         params, y0 = load_calibration_from_json(calibration_file, Params)
-        params.K_threshold = 14.5
+        params.K_threshold = 14.0
         # params.delta_T = 0  # no trust decay
+        # > 1 so that we have the effect of AI danger exceeds the benefit when
+        # exponential growth starts to kick in
+        params.lam = 1.2
+        params.beta = 0.2
     else:
         print("Using hardcoded parameters and initial conditions...")
         # --- Define parameters
@@ -656,7 +693,7 @@ if __name__ == "__main__":
         y0 = np.concatenate([K0, S0, [T0]])
 
     # --- Time horizon
-    t0, tf = 0.0, 20.0  # Shorter time for faster best response computation
+    t0, tf = 0.0, 15.0  # Shorter time for faster best response computation
     t_eval = np.linspace(t0, tf, 101)  # Fewer points for faster computation
 
     # --- Choose policy
@@ -669,7 +706,14 @@ if __name__ == "__main__":
         # Finer action grid for smoother trajectories (10 values: 0.0, 0.1, 0.2, ..., 0.9, 1.0)
         action_grid = [i * 0.1 for i in range(11)]
         action_grid = None
-        print("Using 2-year lookahead with exponential discounting (with discount rate)")
+        print("Using lookahead with exponential discounting (with discount rate)")
+
+        # Set to True to make agents ignore exponential growth in their lookahead
+        # This simulates uncertainty about when the threshold will be reached
+        phase1_only_lookahead = True
+        if phase1_only_lookahead:
+            print("Phase 1 only lookahead: Agents below threshold ignore exponential growth in projections")
+
         policy_fn = best_response_policy_builder(
             params=params,
             dt=0.25,
@@ -677,8 +721,9 @@ if __name__ == "__main__":
             budget_constraint=True,  # Enforce aX + aS + aV = 1
             action_grid=action_grid,
             use_lookahead=True,
-            lookahead_years=1.0,
-            discount_rate=0.1,
+            lookahead_years=1,
+            discount_rate=0.3,
+            phase1_only_lookahead=phase1_only_lookahead,
         )
     elif policy_mode == "bostrom_minimal":
         print("Using Bostrom minimal information policy (myopic optimization)...")
